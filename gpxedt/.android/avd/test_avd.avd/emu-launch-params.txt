@@ -1,6 +1,0 @@
-D:\android\gpxedt
-C:\Program Files (x86)\Android\android-sdk\emulator\emulator.exe
-3
-C:\Program Files (x86)\Android\android-sdk\emulator\emulator.exe
--avd
-test_avd

@@ -1,0 +1,15 @@
+<resources>
+    <string name="app_name">GPXAmi</string>
+    <string name="open_gpx">開啟 GPX 檔案</string>
+    <string name="load_demo">載入示範路徑</string>
+    <string name="export_mp4">匯出 MP4 影片</string>
+    <string name="show_elevation_profile">顯示高度圖</string>
+    <string name="elevation_title">高度剖面圖</string>
+    <string name="speed_label">速度</string>
+    <string name="distance_label">累計距離</string>
+    <string name="elevation_label">海拔高度</string>
+    <string name="gradient_label">坡度</string>
+    <string name="exporting_video">正在匯出影片...</string>
+    <string name="export_success">影片已成功儲存至相簿！</string>
+    <string name="export_failed">匯出失敗</string>
+</resources>

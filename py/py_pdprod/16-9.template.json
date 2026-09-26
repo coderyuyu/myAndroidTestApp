@@ -1,0 +1,217 @@
+{
+    "version": 20180703,
+    "tracks": [
+        {
+            "type": 1,
+            "valid": "true",
+            "audioGain": 1.0,
+            "volume": 1.0,
+            "timelineUnit": []
+        },
+        {
+            "type": 2,
+            "valid": "true",
+            "audioGain": 0.5,
+            "volume": 0.5,
+            "timelineUnit": [
+                {
+                    "beginUs": 0,
+                    "endUs": 0,
+                    "valid": "false",
+                    "volume": 1.0,
+                    "isMute": "false",
+                    "fadeInDurationUs": 0,
+                    "fadeOutDurationUs": 0,
+                    "UserRotate": 0
+                },
+                {
+                    "beginUs": 0,
+                    "endUs": 2000000,
+                    "valid": "true",
+                    "timelineClip": {
+                        "shadowEnabled": "false",
+                        "shadowFilled": "false",
+                        "text": "標題",
+                        "category": "Title",
+                        "effect": "Default",
+                        "coordinates": {
+                            "x": 0.50047034,
+                            "y": 0.50167227,
+                            "rotateAngle": 0,
+                            "width": 0.17873941,
+                            "height": 0.21070234,
+                            "horizontalAlign": 2,
+                            "verticalAlign": 2
+                        },
+                        "fontPath": "__DEFAULT__",
+                        "fontName": "預設",
+                        "fontColor": -1,
+                        "glfx": {
+                            "name": "Default",
+                            "category": "Title"
+                        },
+                        "fontStyle": 0,
+                        "textAlignment": 0,
+                        "normFontSize": 0.088428974,
+                        "borderWidth": 0.0,
+                        "borderColor": -1,
+                        "shadowColor": -16777216,
+                        "shadowDistance": 12,
+                        "opacity": 1.0,
+                        "faceOpacity": 1.0,
+                        "borderOpacity": 1.0,
+                        "shadowOpacity": 1.0,
+                        "borderEnabled": "true",
+                        "faceEnabled": "true",
+                        "inTimeUs": 0,
+                        "outTimeUs": 2000000,
+                        "originalDurationUs": -1,
+                        "type": 2
+                    },
+                    "volume": 1.0,
+                    "isMute": "false",
+                    "fadeInDurationUs": 0,
+                    "fadeOutDurationUs": 0,
+                    "UserRotate": 0
+                }
+            ]
+        },
+        {
+            "type": 2,
+            "valid": "true",
+            "audioGain": 0.5,
+            "volume": 0.5,
+            "timelineUnit": [
+                {
+                    "beginUs": 0,
+                    "endUs": 0,
+                    "valid": "false",
+                    "volume": 1.0,
+                    "isMute": "false",
+                    "fadeInDurationUs": 0,
+                    "fadeOutDurationUs": 0,
+                    "UserRotate": 0
+                },
+                {
+                    "beginUs": 0,
+                    "endUs": 2000000,
+                    "valid": "true",
+                    "timelineClip": {
+                        "shadowEnabled": "false",
+                        "shadowFilled": "false",
+                        "text": "字幕字幕字幕字幕字幕字幕字幕",
+                        "category": "Title",
+                        "effect": "Default",
+                        "coordinates": {
+                            "x": 0.5023518,
+                            "y": 0.90301,
+                            "rotateAngle": 0,
+                            "width": 0.43650046,
+                            "height": 0.073578596,
+                            "horizontalAlign": 2,
+                            "verticalAlign": 2
+                        },
+                        "fontPath": "__DEFAULT__",
+                        "fontName": "預設",
+                        "fontColor": -1,
+                        "glfx": {
+                            "name": "Default",
+                            "category": "Title"
+                        },
+                        "fontStyle": 1,
+                        "textAlignment": 0,
+                        "normFontSize": 0.031044215,
+                        "borderWidth": 0.09,
+                        "borderColor": -16777216,
+                        "shadowColor": -16777216,
+                        "shadowDistance": 12,
+                        "opacity": 1.0,
+                        "faceOpacity": 1.0,
+                        "borderOpacity": 1.0,
+                        "shadowOpacity": 1.0,
+                        "borderEnabled": "true",
+                        "faceEnabled": "true",
+                        "inTimeUs": 0,
+                        "outTimeUs": 2000000,
+                        "originalDurationUs": -1,
+                        "type": 2
+                    },
+                    "volume": 1.0,
+                    "isMute": "false",
+                    "fadeInDurationUs": 0,
+                    "fadeOutDurationUs": 0,
+                    "UserRotate": 0
+                }
+            ]
+        },
+        {
+            "type": 2,
+            "valid": "true",
+            "audioGain": 0.5,
+            "volume": 0.5,
+            "timelineUnit": []
+        },
+        {
+            "type": 2,
+            "valid": "true",
+            "audioGain": 0.5,
+            "volume": 0.5,
+            "timelineUnit": []
+        },
+        {
+            "type": 2,
+            "valid": "true",
+            "audioGain": 0.5,
+            "volume": 0.5,
+            "timelineUnit": []
+        },
+        {
+            "type": 2,
+            "valid": "true",
+            "audioGain": 0.5,
+            "volume": 0.5,
+            "timelineUnit": []
+        },
+        {
+            "type": 2,
+            "valid": "true",
+            "audioGain": 0.5,
+            "volume": 0.5,
+            "timelineUnit": []
+        },
+        {
+            "type": 2,
+            "valid": "true",
+            "audioGain": 0.5,
+            "volume": 0.5,
+            "timelineUnit": []
+        },
+        {
+            "type": 2,
+            "valid": "true",
+            "audioGain": 0.5,
+            "volume": 0.5,
+            "timelineUnit": []
+        },
+        {
+            "type": 4,
+            "valid": "true",
+            "audioGain": 1.0,
+            "volume": 1.0,
+            "timelineUnit": []
+        },
+        {
+            "type": 4,
+            "valid": "true",
+            "audioGain": 1.0,
+            "volume": 1.0,
+            "timelineUnit": []
+        }
+    ],
+    "projectName": "16-9",
+    "countSave": 16,
+    "aspectRatio": 0,
+    "isFirstTimeAddParticle": "false",
+    "waterMarkRightMargin": -1.0,
+    "waterMarkBottomMargin": -1.0
+}

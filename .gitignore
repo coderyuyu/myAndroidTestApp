@@ -1,40 +1,37 @@
-# Ignore build and binary files
-*.mp4
-*.zip
-*.exe
-*.pdrproj
-*.json
-*.jpg
-*.png
-
-# Ignore build outputs
-/build/
-/app/build/
-/*.zip
-/*.mp4
-/*.exe
-
-# Build outputs
-/app/build/
-/build/
+# Built packages & binaries
 *.apk
+*.aab
+*.dex
+*.ap_
+*.so
+*.jar
+*.class
 
-# IDE files
-*.code-workspace
+# Build outputs & caches
+**/build/
+.gradle/
+**/.gradle/
+
+# Android Studio & IDE configurations
+.idea/
+**/.idea/
 *.iml
+**/*.iml
+.cxx/
+**/.cxx/
+local.properties
+captures/
 
-# Media/binaries
-*.mp4
-*.zip
-*.exe
+# Emulator files
+.android/
+**/.android/
+*.avd/
+*.img
 
-# Python cache
+# Python & miscellaneous files
 __pycache__/
-*.pyc
-
-# Ignore IDE/workspace junk
-*.code-workspace
-
-# Ignore large project folders
-PowerDirector/
-camera/
+**/__pycache__/
+*.py[cod]
+.venv/
+output.txt
+*.log

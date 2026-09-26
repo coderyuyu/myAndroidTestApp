@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="GPXAmi - Route Animator" xmlns="http://www.topografix.com/GPX/1/1">
+  <metadata>
+    <name>Hehuanshan Scenic Alpine Ridge Climb</name>
+    <desc>Scenic mountain cycling and hiking route with dynamic switchbacks and significant elevation gain</desc>
+    <time>2026-09-18T06:00:00Z</time>
+  </metadata>
+  <trk>
+    <name>Wuling Summit Ridge</name>
+    <trkseg>
+      <trkpt lat="24.1102" lon="121.1623"><ele>1650.0</ele><time>2026-09-18T06:00:00Z</time></trkpt>
+      <trkpt lat="24.1125" lon="121.1650"><ele>1685.2</ele><time>2026-09-18T06:01:20Z</time></trkpt>
+      <trkpt lat="24.1141" lon="121.1689"><ele>1720.5</ele><time>2026-09-18T06:02:45Z</time></trkpt>
+      <trkpt lat="24.1168" lon="121.1712"><ele>1762.1</ele><time>2026-09-18T06:04:10Z</time></trkpt>
+      <trkpt lat="24.1195" lon="121.1738"><ele>1810.0</ele><time>2026-09-18T06:05:40Z</time></trkpt>
+      <trkpt lat="24.1221" lon="121.1770"><ele>1865.4</ele><time>2026-09-18T06:07:15Z</time></trkpt>
+      <trkpt lat="24.1245" lon="121.1812"><ele>1918.0</ele><time>2026-09-18T06:08:50Z</time></trkpt>
+      <trkpt lat="24.1260" lon="121.1855"><ele>1970.5</ele><time>2026-09-18T06:10:30Z</time></trkpt>
+      <trkpt lat="24.1282" lon="121.1890"><ele>2025.0</ele><time>2026-09-18T06:12:10Z</time></trkpt>
+      <trkpt lat="24.1310" lon="121.1925"><ele>2082.3</ele><time>2026-09-18T06:13:55Z</time></trkpt>
+      <trkpt lat="24.1332" lon="121.1970"><ele>2140.0</ele><time>2026-09-18T06:15:40Z</time></trkpt>
+      <trkpt lat="24.1345" lon="121.2018"><ele>2198.8</ele><time>2026-09-18T06:17:30Z</time></trkpt>
+      <trkpt lat="24.1360" lon="121.2065"><ele>2255.4</ele><time>2026-09-18T06:19:20Z</time></trkpt>
+      <trkpt lat="24.1382" lon="121.2105"><ele>2312.0</ele><time>2026-09-18T06:21:10Z</time></trkpt>
+      <trkpt lat="24.1405" lon="121.2140"><ele>2370.6</ele><time>2026-09-18T06:23:05Z</time></trkpt>
+      <trkpt lat="24.1420" lon="121.2188"><ele>2432.0</ele><time>2026-09-18T06:25:00Z</time></trkpt>
+      <trkpt lat="24.1438" lon="121.2235"><ele>2490.5</ele><time>2026-09-18T06:26:55Z</time></trkpt>
+      <trkpt lat="24.1450" lon="121.2280"><ele>2545.0</ele><time>2026-09-18T06:28:50Z</time></trkpt>
+      <trkpt lat="24.1472" lon="121.2325"><ele>2608.2</ele><time>2026-09-18T06:30:50Z</time></trkpt>
+      <trkpt lat="24.1488" lon="121.2372"><ele>2665.0</ele><time>2026-09-18T06:32:50Z</time></trkpt>
+      <trkpt lat="24.1505" lon="121.2420"><ele>2720.5</ele><time>2026-09-18T06:34:55Z</time></trkpt>
+      <trkpt lat="24.1518" lon="121.2468"><ele>2775.0</ele><time>2026-09-18T06:37:00Z</time></trkpt>
+      <trkpt lat="24.1530" lon="121.2515"><ele>2830.4</ele><time>2026-09-18T06:39:10Z</time></trkpt>
+      <trkpt lat="24.1542" lon="121.2560"><ele>2888.0</ele><time>2026-09-18T06:41:20Z</time></trkpt>
+      <trkpt lat="24.1535" lon="121.2605"><ele>2942.5</ele><time>2026-09-18T06:43:30Z</time></trkpt>
+      <trkpt lat="24.1512" lon="121.2642"><ele>2995.0</ele><time>2026-09-18T06:45:45Z</time></trkpt>
+      <trkpt lat="24.1485" lon="121.2670"><ele>3048.2</ele><time>2026-09-18T06:48:00Z</time></trkpt>
+      <trkpt lat="24.1450" lon="121.2698"><ele>3105.0</ele><time>2026-09-18T06:50:20Z</time></trkpt>
+      <trkpt lat="24.1425" lon="121.2725"><ele>3160.8</ele><time>2026-09-18T06:52:40Z</time></trkpt>
+      <trkpt lat="24.1395" lon="121.2742"><ele>3210.0</ele><time>2026-09-18T06:55:00Z</time></trkpt>
+      <trkpt lat="24.1372" lon="121.2758"><ele>3275.0</ele><time>2026-09-18T06:57:30Z</time></trkpt>
+      <trkpt lat="24.1350" lon="121.2785"><ele>3250.2</ele><time>2026-09-18T06:59:00Z</time></trkpt>
+      <trkpt lat="24.1332" lon="121.2820"><ele>3215.0</ele><time>2026-09-18T07:00:30Z</time></trkpt>
+      <trkpt lat="24.1315" lon="121.2865"><ele>3175.5</ele><time>2026-09-18T07:02:00Z</time></trkpt>
+      <trkpt lat="24.1290" lon="121.2910"><ele>3130.0</ele><time>2026-09-18T07:03:30Z</time></trkpt>
+      <trkpt lat="24.1265" lon="121.2952"><ele>3080.4</ele><time>2026-09-18T07:05:00Z</time></trkpt>
+      <trkpt lat="24.1240" lon="121.2995"><ele>3025.0</ele><time>2026-09-18T07:06:30Z</time></trkpt>
+      <trkpt lat="24.1210" lon="121.3038"><ele>2965.5</ele><time>2026-09-18T07:08:00Z</time></trkpt>
+      <trkpt lat="24.1182" lon="121.3075"><ele>2910.0</ele><time>2026-09-18T07:09:30Z</time></trkpt>
+      <trkpt lat="24.1155" lon="121.3112"><ele>2850.8</ele><time>2026-09-18T07:11:00Z</time></trkpt>
+      <trkpt lat="24.1130" lon="121.3150"><ele>2790.0</ele><time>2026-09-18T07:12:30Z</time></trkpt>
+      <trkpt lat="24.1105" lon="121.3192"><ele>2725.5</ele><time>2026-09-18T07:14:00Z</time></trkpt>
+      <trkpt lat="24.1080" lon="121.3235"><ele>2660.0</ele><time>2026-09-18T07:15:30Z</time></trkpt>
+      <trkpt lat="24.1052" lon="121.3278"><ele>2590.2</ele><time>2026-09-18T07:17:00Z</time></trkpt>
+      <trkpt lat="24.1025" lon="121.3320"><ele>2520.0</ele><time>2026-09-18T07:18:30Z</time></trkpt>
+    </trkseg>
+  </trk>
+</gpx>
