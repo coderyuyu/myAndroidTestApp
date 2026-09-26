@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.dir2gpx.service.PolylineDecoderTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-09-19T12:48:29" hostname="LAPTOP-MOKNDJ40" time="0.001">
+  <properties/>
+  <testcase name="testDecodeEmptyString" classname="com.dir2gpx.service.PolylineDecoderTest" time="0.0"/>
+  <testcase name="testDecodeSinglePoint" classname="com.dir2gpx.service.PolylineDecoderTest" time="0.001"/>
+  <testcase name="testDecodeStandardPolyline" classname="com.dir2gpx.service.PolylineDecoderTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

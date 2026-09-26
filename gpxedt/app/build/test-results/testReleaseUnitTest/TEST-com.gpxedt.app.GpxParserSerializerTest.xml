@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.gpxedt.app.GpxParserSerializerTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-09-21T13:05:09" hostname="LAPTOP-MOKNDJ40" time="0.14">
+  <properties/>
+  <testcase name="testSerializationRoundTrip" classname="com.gpxedt.app.GpxParserSerializerTest" time="0.135"/>
+  <testcase name="testParseGpxXml" classname="com.gpxedt.app.GpxParserSerializerTest" time="0.004"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

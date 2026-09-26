@@ -1,0 +1,7 @@
+# Always use LF for source code
+*.py text eol=lf
+*.xml text eol=lf
+*.gradle text eol=lf
+
+# Keep Windows batch files with CRLF
+*.bat text eol=crlf

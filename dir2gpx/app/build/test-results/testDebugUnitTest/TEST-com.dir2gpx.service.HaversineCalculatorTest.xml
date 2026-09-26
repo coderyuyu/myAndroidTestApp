@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.dir2gpx.service.HaversineCalculatorTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-09-19T12:48:29" hostname="LAPTOP-MOKNDJ40" time="0.014">
+  <properties/>
+  <testcase name="testBearingNorth" classname="com.dir2gpx.service.HaversineCalculatorTest" time="0.002"/>
+  <testcase name="testInterpolateTimestampsEquidistant" classname="com.dir2gpx.service.HaversineCalculatorTest" time="0.01"/>
+  <testcase name="testSamePointDistanceIsZero" classname="com.dir2gpx.service.HaversineCalculatorTest" time="0.0"/>
+  <testcase name="testBearingEast" classname="com.dir2gpx.service.HaversineCalculatorTest" time="0.0"/>
+  <testcase name="testEquatorialDistance" classname="com.dir2gpx.service.HaversineCalculatorTest" time="0.001"/>
+  <testcase name="testTotalDistanceKm" classname="com.dir2gpx.service.HaversineCalculatorTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

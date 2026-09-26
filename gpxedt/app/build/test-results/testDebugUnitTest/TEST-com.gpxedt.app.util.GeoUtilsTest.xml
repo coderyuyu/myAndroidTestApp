@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.gpxedt.app.util.GeoUtilsTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-09-21T14:46:24" hostname="LAPTOP-MOKNDJ40" time="0.008">
+  <properties/>
+  <testcase name="testIsPointOnRoute" classname="com.gpxedt.app.util.GeoUtilsTest" time="0.005"/>
+  <testcase name="testHaversineDistance" classname="com.gpxedt.app.util.GeoUtilsTest" time="0.0"/>
+  <testcase name="testEmptyRoute" classname="com.gpxedt.app.util.GeoUtilsTest" time="0.001"/>
+  <testcase name="testDistanceToSegment_onSegment" classname="com.gpxedt.app.util.GeoUtilsTest" time="0.0"/>
+  <testcase name="testDistanceToSegment_perpendicular" classname="com.gpxedt.app.util.GeoUtilsTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

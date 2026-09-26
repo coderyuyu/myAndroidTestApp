@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">GPX Editor</string>
+    <string name="open_gpx">Open GPX</string>
+    <string name="save_gpx">Save</string>
+    <string name="save_as_gpx">Save As</string>
+    <string name="trim_start">Trim Start (去頭)</string>
+    <string name="trim_end">Trim End (去尾)</string>
+    <string name="replace_route">Online Route Replace (線上重繞)</string>
+    <string name="add_wpt">Add Waypoint (新增航點)</string>
+</resources>

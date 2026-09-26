@@ -1,0 +1,20 @@
+R_DEF: Internal format may change without notice
+local
+color black
+color purple_200
+color purple_500
+color purple_700
+color teal_200
+color teal_700
+color white
+drawable ic_launcher_foreground
+mipmap ic_launcher
+string add_wpt
+string app_name
+string open_gpx
+string replace_route
+string save_as_gpx
+string save_gpx
+string trim_end
+string trim_start
+style Theme.GPXEditor

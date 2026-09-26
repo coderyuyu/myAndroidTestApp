@@ -1,0 +1,13 @@
+# Ignore build and binary files
+*.mp4
+*.zip
+*.exe
+*.pdrproj
+*.json
+
+# Ignore IDE/workspace junk
+*.code-workspace
+
+# Ignore large project folders
+PowerDirector/
+camera/
