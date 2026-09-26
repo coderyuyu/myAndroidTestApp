@@ -80,27 +80,30 @@ class MapRenderer(
         style = Style.STROKE
     }
 
-    private val routeBasePaint = Paint().apply {
-        color = Color.argb(140, 71, 85, 105) // Slate 600 subtle route
-        strokeWidth = 5.5f
+    companion object {
+        const val BLACK_BORDER_WIDTH = 3.0f // 固定使用現有細線的 size (3f)
+    }
+
+    // Outer black border casing (兩邊包黑線，固定細線 size)
+    private val routeBlackCasingPaint = Paint().apply {
+        color = Color.BLACK
         style = Style.STROKE
         strokeCap = Cap.ROUND
         strokeJoin = Join.ROUND
         isAntiAlias = true
     }
 
-    private val trailGlowPaint = Paint().apply {
-        color = Color.argb(90, 0, 242, 254) // Neon cyan glow
-        strokeWidth = 14.0f
+    // Clear hollow center (中間鏤空，透出地圖)
+    private val routeHollowClearPaint = Paint().apply {
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.CLEAR)
         style = Style.STROKE
         strokeCap = Cap.ROUND
         strokeJoin = Join.ROUND
         isAntiAlias = true
     }
 
+    // Traversed route trail core (已走過路徑：中間填入使用者自選顏色)
     private val trailCorePaint = Paint().apply {
-        color = Color.rgb(0, 242, 254) // Vibrant cyan
-        strokeWidth = 5.0f
         style = Style.STROKE
         strokeCap = Cap.ROUND
         strokeJoin = Join.ROUND
@@ -157,7 +160,7 @@ class MapRenderer(
 
         val zoomX = ln((viewportWidth * 360.0) / (256.0 * spanLon * 1.5)) / ln(2.0)
         val zoomY = ln((viewportHeight * 180.0) / (256.0 * spanLat * 1.5)) / ln(2.0)
-        return min(zoomX, zoomY).coerceIn(9.0, 16.0)
+        return min(zoomX, zoomY).coerceIn(8.0, 18.0)
     }
 
     /**
@@ -178,12 +181,25 @@ class MapRenderer(
         panOffsetX: Float = 0f,
         panOffsetY: Float = 0f,
         focusPoint: Pair<Double, Double>? = null,
-        showWaypointLabels: Boolean = true
+        showWaypointLabels: Boolean = true,
+        wptLabelTextSize: Float = 20f,
+        markerRadius: Float = 12f,
+        markerColor: Int = Color.rgb(6, 182, 212),
+        trackWidth: Float = 5.0f,
+        trackColor: Int = Color.rgb(0, 242, 254),
+        blackBorderWidth: Float = BLACK_BORDER_WIDTH
     ) {
         if (track.points.isEmpty()) {
             canvas.drawRect(0f, 0f, width, height, bgPaint)
             return
         }
+
+        // Dynamically configure route and trail paints based on user customization
+        // 兩邊包黑線，中間使用 user 所選的粗細與顏色
+        routeBlackCasingPaint.strokeWidth = trackWidth + 2f * blackBorderWidth
+        routeHollowClearPaint.strokeWidth = trackWidth
+        trailCorePaint.strokeWidth = trackWidth
+        trailCorePaint.color = trackColor
 
         val zoom = customZoom ?: if (autoFollowMarker) {
             calculateOptimalZoom(track, width, height) + 0.8
@@ -235,7 +251,7 @@ class MapRenderer(
             mapVeilPaint
         )
 
-        // 4. Draw full upcoming route polyline
+        // 4. Draw full route polyline: 空的實線，兩邊包黑線 (黑線固定 3f, 中間鏤空透出底圖)
         val fullRoutePath = Path()
         val firstScreen = toScreen(track.points[0].lat, track.points[0].lon)
         fullRoutePath.moveTo(firstScreen.first, firstScreen.second)
@@ -244,9 +260,13 @@ class MapRenderer(
             val pt = toScreen(track.points[i].lat, track.points[i].lon)
             fullRoutePath.lineTo(pt.first, pt.second)
         }
-        canvas.drawPath(fullRoutePath, routeBasePaint)
 
-        // 5. Draw glowing traversed route trail
+        val saveCount = canvas.saveLayer(null as RectF?, null)
+        canvas.drawPath(fullRoutePath, routeBlackCasingPaint)
+        canvas.drawPath(fullRoutePath, routeHollowClearPaint)
+        canvas.restoreToCount(saveCount)
+
+        // 5. Draw traversed route trail: 中間使用 user 所選的顏色
         val currentSegIdx = interpolatedPoint.pointIndex
         if (currentSegIdx >= 0 && track.points.isNotEmpty()) {
             val trailPath = Path()
@@ -260,17 +280,15 @@ class MapRenderer(
             val markerScreen = toScreen(interpolatedPoint.lat, interpolatedPoint.lon)
             trailPath.lineTo(markerScreen.first, markerScreen.second)
 
-            // Outer glow pass
-            canvas.drawPath(trailPath, trailGlowPaint)
-            // Core vibrant pass
+            // Traversed middle filled with user-selected color
             canvas.drawPath(trailPath, trailCorePaint)
         }
 
-        // 6. Draw Green Start Circle & Prominent Red End Circle (Destination)
-        drawRouteStartPoint(canvas, firstScreen.first, firstScreen.second)
+        // 6. Draw Green Start Circle & Red End Circle (Destination) matching markerRadius size
+        drawRouteStartPoint(canvas, firstScreen.first, firstScreen.second, markerRadius)
         val endPt = track.points.last()
         val endScreen = toScreen(endPt.lat, endPt.lon)
-        drawRouteEndPoint(canvas, endScreen.first, endScreen.second)
+        drawRouteEndPoint(canvas, endScreen.first, endScreen.second, markerRadius)
 
         // 6.5 Draw Static Red Waypoint Points on Route (not animated)
         for (wpt in track.waypoints) {
@@ -280,13 +298,21 @@ class MapRenderer(
                 x = wx,
                 y = wy,
                 name = if (showWaypointLabels) wpt.name else null,
-                rotationDegrees = rotationDegrees
+                rotationDegrees = rotationDegrees,
+                labelTextSize = wptLabelTextSize
             )
         }
 
         // 7. Draw Moving Vehicle Marker with Orientation & Pulse Ring
         val (markerX, markerY) = toScreen(interpolatedPoint.lat, interpolatedPoint.lon)
-        drawVehicleMarker(canvas, markerX, markerY, interpolatedPoint.bearingDegrees)
+        drawVehicleMarker(
+            canvas = canvas,
+            x = markerX,
+            y = markerY,
+            bearingDegrees = interpolatedPoint.bearingDegrees,
+            radius = markerRadius,
+            color = markerColor
+        )
 
         // Restore canvas from map rotation
         canvas.restore()
@@ -611,85 +637,77 @@ class MapRenderer(
 
     /**
      * Draws the route start point with an emerald green circle, outer glow, and white border.
+     * Circle size matches markerRadius (same size as vehicle marker dot).
      */
-    private fun drawRouteStartPoint(canvas: Canvas, x: Float, y: Float) {
+    private fun drawRouteStartPoint(canvas: Canvas, x: Float, y: Float, radius: Float = 12f) {
         val haloPaint = Paint().apply {
             color = Color.argb(80, 16, 185, 129)
             style = Style.FILL
             isAntiAlias = true
         }
-        canvas.drawCircle(x, y, 16f, haloPaint)
-
-        val whiteBorder = Paint().apply {
-            color = Color.WHITE
-            style = Style.STROKE
-            strokeWidth = 2.5f
-            isAntiAlias = true
-        }
-        canvas.drawCircle(x, y, 9f, whiteBorder)
+        canvas.drawCircle(x, y, radius * 1.83f, haloPaint)
 
         val greenBody = Paint().apply {
             color = Color.rgb(16, 185, 129)
             style = Style.FILL
             isAntiAlias = true
         }
-        canvas.drawCircle(x, y, 7.5f, greenBody)
+        canvas.drawCircle(x, y, radius, greenBody)
+
+        val whiteBorder = Paint().apply {
+            color = Color.WHITE
+            style = Style.STROKE
+            strokeWidth = max(2.0f, radius * 0.25f)
+            isAntiAlias = true
+        }
+        canvas.drawCircle(x, y, radius, whiteBorder)
 
         val centerDot = Paint().apply {
             color = Color.WHITE
             style = Style.FILL
             isAntiAlias = true
         }
-        canvas.drawCircle(x, y, 2.5f, centerDot)
+        canvas.drawCircle(x, y, radius * 0.3f, centerDot)
     }
 
     /**
-     * Draws the destination end point with a prominent vibrant red circle,
+     * Draws the destination end point with a vibrant red circle,
      * glowing outer halo, crisp white concentric ring, and white center core.
-     * Corresponds to the end of the route selected by the slide bar.
+     * Circle size matches markerRadius (same size as vehicle marker dot).
      */
-    private fun drawRouteEndPoint(canvas: Canvas, x: Float, y: Float) {
-        // 1. Soft glowing outer red halo (large, eye-catching)
+    private fun drawRouteEndPoint(canvas: Canvas, x: Float, y: Float, radius: Float = 12f) {
+        // 1. Soft glowing outer red halo
         val haloPaint = Paint().apply {
             color = Color.argb(95, 239, 68, 68) // Translucent vibrant red
             style = Style.FILL
             isAntiAlias = true
         }
-        canvas.drawCircle(x, y, 20f, haloPaint)
+        canvas.drawCircle(x, y, radius * 1.83f, haloPaint)
 
-        // 2. Outer red stroke ring
-        val outerStroke = Paint().apply {
-            color = Color.rgb(239, 68, 68)
-            style = Style.STROKE
-            strokeWidth = 2.5f
-            isAntiAlias = true
-        }
-        canvas.drawCircle(x, y, 15f, outerStroke)
-
-        // 3. Crisp white contrast border
-        val whiteBorder = Paint().apply {
-            color = Color.WHITE
-            style = Style.STROKE
-            strokeWidth = 2.5f
-            isAntiAlias = true
-        }
-        canvas.drawCircle(x, y, 11f, whiteBorder)
-
-        // 4. Vibrant red solid circle body
+        // 2. Vibrant red solid circle body
         val redBody = Paint().apply {
             color = Color.rgb(239, 68, 68)
             style = Style.FILL
             isAntiAlias = true
         }
-        canvas.drawCircle(x, y, 9f, redBody)
+        canvas.drawCircle(x, y, radius, redBody)
 
-        // 5. Bright white center bullseye dot
+        // 3. Crisp white contrast border
+        val whiteBorder = Paint().apply {
+            color = Color.WHITE
+            style = Style.STROKE
+            strokeWidth = max(2.0f, radius * 0.25f)
+            isAntiAlias = true
+        }
+        canvas.drawCircle(x, y, radius, whiteBorder)
+
+        // 4. Bright white center bullseye dot
         val centerDot = Paint().apply {
             color = Color.WHITE
             style = Style.FILL
             isAntiAlias = true
         }
-        canvas.drawCircle(x, y, 3.5f, centerDot)
+        canvas.drawCircle(x, y, radius * 0.3f, centerDot)
     }
 
     /**
@@ -701,7 +719,8 @@ class MapRenderer(
         x: Float,
         y: Float,
         name: String?,
-        rotationDegrees: Float = 0f
+        rotationDegrees: Float = 0f,
+        labelTextSize: Float = 20f
     ) {
         // 1. Soft glowing green outer halo
         val haloPaint = Paint().apply {
@@ -741,7 +760,7 @@ class MapRenderer(
             val labelText = name.trim()
             val textPaint = Paint().apply {
                 color = Color.WHITE
-                textSize = 20f
+                textSize = labelTextSize
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 textAlign = Paint.Align.CENTER
                 isAntiAlias = true
@@ -784,24 +803,35 @@ class MapRenderer(
     /**
      * Renders the traveling vehicle marker with heading arrow, glowing halo, and orientation.
      */
-    private fun drawVehicleMarker(canvas: Canvas, x: Float, y: Float, bearingDegrees: Float) {
+    private fun drawVehicleMarker(
+        canvas: Canvas,
+        x: Float,
+        y: Float,
+        bearingDegrees: Float,
+        radius: Float = 12f,
+        color: Int = Color.rgb(6, 182, 212)
+    ) {
         canvas.save()
         canvas.translate(x, y)
 
         // Pulsing glow halo
-        canvas.drawCircle(0f, 0f, 22f, markerHaloPaint)
+        markerHaloPaint.color = Color.argb(80, Color.red(color), Color.green(color), Color.blue(color))
+        canvas.drawCircle(0f, 0f, radius * 1.83f, markerHaloPaint)
 
         // Marker circular base
-        canvas.drawCircle(0f, 0f, 12f, markerBodyPaint)
-        canvas.drawCircle(0f, 0f, 12f, markerBorderPaint)
+        markerBodyPaint.color = color
+        canvas.drawCircle(0f, 0f, radius, markerBodyPaint)
+        markerBorderPaint.strokeWidth = max(2.0f, radius * 0.25f)
+        canvas.drawCircle(0f, 0f, radius, markerBorderPaint)
 
         // Directional navigation arrowhead rotated along current travel bearing
         canvas.rotate(bearingDegrees)
+        val scale = radius / 12f
         val arrowPath = Path().apply {
-            moveTo(0f, -8f)   // Tip pointing forward
-            lineTo(5.5f, 6f)  // Bottom right
-            lineTo(0f, 3.5f)  // Inner notch
-            lineTo(-5.5f, 6f) // Bottom left
+            moveTo(0f, -8f * scale)
+            lineTo(5.5f * scale, 6f * scale)
+            lineTo(0f, 3.5f * scale)
+            lineTo(-5.5f * scale, 6f * scale)
             close()
         }
         canvas.drawPath(arrowPath, markerArrowPaint)

@@ -33,7 +33,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -57,9 +59,11 @@ import kotlin.math.sin
 
 /**
  * Storage Access Framework document picker configured specifically for .gpx files
- * with default initial URI pointing to device Downloads folder.
+ * with default initial URI pointing to second-to-last directory (上上次目錄) or Downloads.
  */
-class OpenGpxDocumentContract : ActivityResultContracts.OpenDocument() {
+class OpenGpxDocumentContract(
+    private val getInitialUri: () -> Uri? = { null }
+) : ActivityResultContracts.OpenDocument() {
     override fun createIntent(context: Context, input: Array<String>): Intent {
         val intent = super.createIntent(context, input).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
@@ -75,8 +79,9 @@ class OpenGpxDocumentContract : ActivityResultContracts.OpenDocument() {
                 )
             )
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val downloadsUri = Uri.parse("content://com.android.externalstorage.documents/document/primary:Download")
-                putExtra(DocumentsContract.EXTRA_INITIAL_URI, downloadsUri)
+                val targetUri = getInitialUri()
+                    ?: Uri.parse("content://com.android.externalstorage.documents/document/primary:Download")
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, targetUri)
             }
         }
         return intent
@@ -91,14 +96,15 @@ fun MapAnimationScreen(
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
 
-    // Storage Access Framework (SAF) document picker for .gpx files with Downloads folder default
+    // [需求 6] Storage Access Framework (SAF) document picker with default pointing to 上上次目錄
     val gpxPickerLauncher = rememberLauncherForActivityResult(
-        contract = OpenGpxDocumentContract()
+        contract = OpenGpxDocumentContract { uiState.initialPickerUri }
     ) { uri: Uri? ->
         uri?.let { viewModel.loadGpxFromUri(it) }
     }
 
     var showExportSettingsDialog by remember { mutableStateOf(false) }
+    var showEditTitleDialog by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -188,6 +194,7 @@ fun MapAnimationScreen(
             val currentInterpolated = uiState.interpolatedPoint
             val currentRotation by rememberUpdatedState(uiState.mapRotation)
 
+            val density = LocalDensity.current.density
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -196,6 +203,11 @@ fun MapAnimationScreen(
                     .clip(RoundedCornerShape(12.dp))
                     .background(SurfaceDark)
                     .border(1.dp, GlassBorder, RoundedCornerShape(12.dp))
+                    .onSizeChanged { intSize ->
+                        if (intSize.width > 0 && intSize.height > 0) {
+                            viewModel.setUiViewportSize(intSize.width.toFloat(), intSize.height.toFloat(), density)
+                        }
+                    }
                     .pointerInput(Unit) {
                         detectTransformGestures { _, panChange, zoomChange, rotationChange ->
                             if (panChange.x != 0f || panChange.y != 0f) {
@@ -230,7 +242,7 @@ fun MapAnimationScreen(
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         if (tileEpoch >= 0L) {
                             drawIntoCanvas { canvas ->
-                                val optZoom = mapRenderer.calculateOptimalZoom(currentTrack, size.width, size.height) + 0.8 + uiState.zoomOffset
+                                val optZoom = mapRenderer.calculateOptimalZoom(currentTrack, size.width, size.height) + 0.8 + uiState.zoomOffset + uiState.cameraZoomTransitionOffset
                                 mapRenderer.renderMap(
                                     canvas = canvas.nativeCanvas,
                                     width = size.width,
@@ -246,7 +258,13 @@ fun MapAnimationScreen(
                                     panOffsetX = uiState.panOffsetX,
                                     panOffsetY = uiState.panOffsetY,
                                     focusPoint = uiState.focusPoint,
-                                    showWaypointLabels = uiState.showWaypointLabels
+                                    showWaypointLabels = uiState.showWaypointLabels,
+                                    wptLabelTextSize = uiState.wptLabelTextSize * density,
+                                    markerRadius = uiState.markerRadius * density,
+                                    markerColor = uiState.markerColor,
+                                    trackWidth = uiState.trackWidth * density,
+                                    trackColor = uiState.trackColor,
+                                    blackBorderWidth = MapRenderer.BLACK_BORDER_WIDTH * density
                                 )
                             }
                         }
@@ -271,22 +289,34 @@ fun MapAnimationScreen(
                         }
                     }
 
-                    // LAYER C: Top-Left Route Title & GPS Badge
+                    // LAYER C: Top-Left Route Title & GPS Badge [需求: Title 可選字型大小]
                     Row(
                         modifier = Modifier
                             .align(Alignment.TopStart)
                             .padding(8.dp)
-                            .background(Color(0xCC0F172A), RoundedCornerShape(6.dp))
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xCC0F172A))
+                            .border(1.dp, GlassBorder, RoundedCornerShape(8.dp))
+                            .clickable { showEditTitleDialog = true }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text(
-                            text = currentTrack.name,
-                            color = TextPrimary,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.SemiBold
+                        Icon(
+                            imageVector = Icons.Default.Edit,
+                            contentDescription = "修改影片標題",
+                            tint = CyanNeon,
+                            modifier = Modifier.size((uiState.titleTextSize * 0.55f).coerceIn(16f, 32f).dp)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = uiState.videoTitle,
+                            color = TextPrimary,
+                            fontSize = uiState.titleTextSize.sp,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
                         Text(
                             text = String.format(
                                 Locale.US,
@@ -295,7 +325,7 @@ fun MapAnimationScreen(
                                 currentInterpolated.lon
                             ),
                             color = TextMuted,
-                            fontSize = 10.sp
+                            fontSize = (uiState.titleTextSize * 0.32f).coerceIn(10f, 15f).sp
                         )
                     }
 
@@ -468,6 +498,19 @@ fun MapAnimationScreen(
             }
 
             // =========================================================================
+            // 2.5 VISUAL CUSTOMIZATION OPTIONS (WPT字體、前進圓點、路徑樣式)
+            // =========================================================================
+            VisualCustomizationCard(
+                uiState = uiState,
+                onSetWptTextSize = { viewModel.setWptLabelTextSize(it) },
+                onSetMarkerRadius = { viewModel.setMarkerRadius(it) },
+                onSetMarkerColor = { viewModel.setMarkerColor(it) },
+                onSetTrackWidth = { viewModel.setTrackWidth(it) },
+                onSetTrackColor = { viewModel.setTrackColor(it) },
+                onSetTitleTextSize = { viewModel.setTitleTextSize(it) }
+            )
+
+            // =========================================================================
             // 3. PLAYBACK & SCRUBBING CONTROLS
             // =========================================================================
             PlaybackControlBar(
@@ -542,6 +585,100 @@ fun MapAnimationScreen(
                 showExportSettingsDialog = false
                 viewModel.exportVideo(config)
             }
+        )
+    }
+
+    // =========================================================================
+    // EDIT TITLE DIALOG [需求 4: 在影片左上角顯示 title, 預設為檔名, 可修改]
+    // =========================================================================
+    if (showEditTitleDialog) {
+        var titleInput by remember(uiState.videoTitle) { mutableStateOf(uiState.videoTitle) }
+        AlertDialog(
+            onDismissRequest = { showEditTitleDialog = false },
+            icon = {
+                Icon(
+                    imageVector = Icons.Default.Edit,
+                    contentDescription = null,
+                    tint = CyanNeon,
+                    modifier = Modifier.size(28.dp)
+                )
+            },
+            title = {
+                Text(
+                    text = "修改影片標題 (Title)",
+                    color = TextPrimary,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "此標題將顯示於預覽與匯出影片左上角，預設為 GPX 檔案名稱：",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                    OutlinedTextField(
+                        value = titleInput,
+                        onValueChange = { titleInput = it },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = CyanNeon,
+                            unfocusedBorderColor = GlassBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        )
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "標題字型大小：",
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier.horizontalScroll(rememberScrollState())
+                    ) {
+                        listOf(
+                            Pair("小 (24)", 24f),
+                            Pair("標準 (32)", 32f),
+                            Pair("大 (40)", 40f),
+                            Pair("特大 (48)", 48f)
+                        ).forEach { (label, size) ->
+                            val isSelected = kotlin.math.abs(uiState.titleTextSize - size) < 1f
+                            FilterChip(
+                                selected = isSelected,
+                                onClick = { viewModel.setTitleTextSize(size) },
+                                label = { Text(label, fontSize = 11.sp) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    selectedContainerColor = CyanDark,
+                                    selectedLabelColor = CyanNeon
+                                )
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (titleInput.isNotBlank()) {
+                            viewModel.setVideoTitle(titleInput.trim())
+                        }
+                        showEditTitleDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary, contentColor = Color.Black)
+                ) {
+                    Text("確定")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEditTitleDialog = false }) {
+                    Text("取消", color = TextSecondary)
+                }
+            },
+            containerColor = SurfaceDark
         )
     }
 
@@ -890,6 +1027,17 @@ private fun ExportSettingsDialog(
                         )
                     }
                     Text(
+                        text = "• 影片標題 (左上角): ${uiState.videoTitle} (字體 ${uiState.titleTextSize.toInt()}sp)",
+                        color = TextPrimary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "• 樣式設定: WPT字體 ${uiState.wptLabelTextSize.toInt()}sp, 圓點 ${uiState.markerRadius.toInt()}dp, 路徑 ${uiState.trackWidth.toInt()}dp",
+                        color = CyanNeon,
+                        fontSize = 11.sp
+                    )
+                    Text(
                         text = if (uiState.showElevationProfile) "✓ 包含底部 1/5 同步高度圖與指北針" else "✗ 未勾選高度圖",
                         color = if (uiState.showElevationProfile) EmeraldAccent else AmberAccent,
                         fontSize = 11.sp
@@ -918,7 +1066,17 @@ private fun ExportSettingsDialog(
                         rotationDegrees = uiState.mapRotation,
                         mapStyle = uiState.mapStyle,
                         panOffsetX = uiState.panOffsetX,
-                        panOffsetY = uiState.panOffsetY
+                        panOffsetY = uiState.panOffsetY,
+                        videoTitle = uiState.videoTitle,
+                        titleTextSize = uiState.titleTextSize,
+                        wptLabelTextSize = uiState.wptLabelTextSize,
+                        markerRadius = uiState.markerRadius,
+                        markerColor = uiState.markerColor,
+                        trackWidth = uiState.trackWidth,
+                        trackColor = uiState.trackColor,
+                        uiViewportWidth = uiState.uiViewportWidth,
+                        uiViewportHeight = uiState.uiViewportHeight,
+                        uiDensity = uiState.uiDensity
                     )
                     onConfirmExport(config)
                 },
@@ -1153,4 +1311,313 @@ private fun ExportSuccessDialog(
         },
         containerColor = SurfaceDark
     )
+}
+
+/**
+ * Visual styling options card for:
+ * [需求 1] 提供調整WPT label 字型大小的選項
+ * [需求 2] 提供前進圓點大小及顏色選項
+ * [需求 3] 提供路徑的粗細及顏色的選項
+ */
+@Composable
+private fun VisualCustomizationCard(
+    uiState: MapUiState,
+    onSetWptTextSize: (Float) -> Unit,
+    onSetMarkerRadius: (Float) -> Unit,
+    onSetMarkerColor: (Int) -> Unit,
+    onSetTrackWidth: (Float) -> Unit,
+    onSetTrackColor: (Int) -> Unit,
+    onSetTitleTextSize: (Float) -> Unit
+) {
+    var isExpanded by remember { mutableStateOf(false) }
+
+    val markerColors = listOf(
+        Pair("青色", android.graphics.Color.rgb(6, 182, 212)),
+        Pair("亮紅", android.graphics.Color.rgb(239, 68, 68)),
+        Pair("琥珀", android.graphics.Color.rgb(245, 158, 11)),
+        Pair("翡翠", android.graphics.Color.rgb(16, 185, 129)),
+        Pair("霓虹紫", android.graphics.Color.rgb(168, 85, 247)),
+        Pair("純白", android.graphics.Color.rgb(255, 255, 255))
+    )
+
+    val trackColors = listOf(
+        Pair("霓虹青", android.graphics.Color.rgb(0, 242, 254)),
+        Pair("烈焰橘", android.graphics.Color.rgb(255, 107, 0)),
+        Pair("鮮紅", android.graphics.Color.rgb(239, 68, 68)),
+        Pair("螢光黃", android.graphics.Color.rgb(250, 204, 21)),
+        Pair("翠綠", android.graphics.Color.rgb(16, 185, 129)),
+        Pair("桃紅", android.graphics.Color.rgb(244, 63, 94))
+    )
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 4.dp),
+        colors = CardDefaults.cardColors(containerColor = SurfaceDarkElevated),
+        shape = RoundedCornerShape(10.dp)
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { isExpanded = !isExpanded },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Palette,
+                        contentDescription = null,
+                        tint = CyanNeon,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Text(
+                        text = "樣式選項 (WPT字體 / 前進圓點 / 路徑)",
+                        color = TextPrimary,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = if (isExpanded) "收合" else "展開設定",
+                        color = CyanNeon,
+                        fontSize = 11.sp
+                    )
+                    Icon(
+                        imageVector = if (isExpanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                        contentDescription = null,
+                        tint = CyanNeon,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+
+            AnimatedVisibility(visible = isExpanded) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    // 1. [需求 1] WPT label 字型大小選項
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "1. WPT 航點字型大小:",
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.horizontalScroll(rememberScrollState())
+                        ) {
+                            listOf(
+                                Pair("小 (14)", 14f),
+                                Pair("標準 (20)", 20f),
+                                Pair("大 (26)", 26f),
+                                Pair("特大 (32)", 32f)
+                            ).forEach { (label, size) ->
+                                val isSelected = kotlin.math.abs(uiState.wptLabelTextSize - size) < 1f
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { onSetWptTextSize(size) },
+                                    label = { Text(label, fontSize = 11.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = CyanDark,
+                                        selectedLabelColor = CyanNeon
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = GlassBorder)
+
+                    // 2. [需求 2] 前進圓點大小及顏色選項
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "2. 前進圓點大小及顏色:",
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        // 大小
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(text = "大小:", color = TextMuted, fontSize = 11.sp)
+                            listOf(
+                                Pair("小 (8)", 8f),
+                                Pair("標準 (12)", 12f),
+                                Pair("大 (16)", 16f),
+                                Pair("特大 (22)", 22f)
+                            ).forEach { (label, r) ->
+                                val isSelected = kotlin.math.abs(uiState.markerRadius - r) < 1f
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { onSetMarkerRadius(r) },
+                                    label = { Text(label, fontSize = 11.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = CyanDark,
+                                        selectedLabelColor = CyanNeon
+                                    )
+                                )
+                            }
+                        }
+
+                        // 顏色
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.horizontalScroll(rememberScrollState())
+                        ) {
+                            Text(text = "顏色:", color = TextMuted, fontSize = 11.sp)
+                            markerColors.forEach { (name, colorInt) ->
+                                val isSelected = uiState.markerColor == colorInt
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(colorInt))
+                                        .border(
+                                            width = if (isSelected) 3.dp else 1.dp,
+                                            color = if (isSelected) Color.White else GlassBorder,
+                                            shape = CircleShape
+                                        )
+                                        .clickable { onSetMarkerColor(colorInt) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = name,
+                                            tint = if (colorInt == android.graphics.Color.WHITE) Color.Black else Color.White,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = GlassBorder)
+
+                    // 3. [需求 3] 路徑的粗細及顏色選項
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            text = "3. 路徑粗細及顏色:",
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        // 粗細
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            Text(text = "粗細:", color = TextMuted, fontSize = 11.sp)
+                            listOf(
+                                Pair("細 (3)", 3f),
+                                Pair("標準 (5)", 5f),
+                                Pair("粗 (8)", 8f),
+                                Pair("特粗 (12)", 12f)
+                            ).forEach { (label, w) ->
+                                val isSelected = kotlin.math.abs(uiState.trackWidth - w) < 0.5f
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { onSetTrackWidth(w) },
+                                    label = { Text(label, fontSize = 11.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = CyanDark,
+                                        selectedLabelColor = CyanNeon
+                                    )
+                                )
+                            }
+                        }
+
+                        // 顏色
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.horizontalScroll(rememberScrollState())
+                        ) {
+                            Text(text = "顏色:", color = TextMuted, fontSize = 11.sp)
+                            trackColors.forEach { (name, colorInt) ->
+                                val isSelected = uiState.trackColor == colorInt
+                                Box(
+                                    modifier = Modifier
+                                        .size(28.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(colorInt))
+                                        .border(
+                                            width = if (isSelected) 3.dp else 1.dp,
+                                            color = if (isSelected) Color.White else GlassBorder,
+                                            shape = CircleShape
+                                        )
+                                        .clickable { onSetTrackColor(colorInt) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isSelected) {
+                                        Icon(
+                                            imageVector = Icons.Default.Check,
+                                            contentDescription = name,
+                                            tint = if (colorInt == android.graphics.Color.WHITE) Color.Black else Color.White,
+                                            modifier = Modifier.size(16.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(color = GlassBorder)
+
+                    // 4. [需求: Title 可選字型大小]
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "4. 影片標題 (Title) 字型大小:",
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.horizontalScroll(rememberScrollState())
+                        ) {
+                            listOf(
+                                Pair("小 (24)", 24f),
+                                Pair("標準 (32)", 32f),
+                                Pair("大 (40)", 40f),
+                                Pair("特大 (48)", 48f)
+                            ).forEach { (label, size) ->
+                                val isSelected = kotlin.math.abs(uiState.titleTextSize - size) < 1f
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { onSetTitleTextSize(size) },
+                                    label = { Text(label, fontSize = 11.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = CyanDark,
+                                        selectedLabelColor = CyanNeon
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
