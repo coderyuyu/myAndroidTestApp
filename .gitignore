@@ -4,6 +4,16 @@
 *.exe
 *.pdrproj
 *.json
+*.jpg
+*.png
+
+# Ignore build outputs
+/build/
+/app/build/
+/*.zip
+/*.mp4
+/*.exe
+
 
 # Ignore IDE/workspace junk
 *.code-workspace
