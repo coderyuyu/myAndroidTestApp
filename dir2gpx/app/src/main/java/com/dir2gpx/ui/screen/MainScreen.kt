@@ -36,8 +36,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -115,6 +118,7 @@ fun MainScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(contentPadding)
+                .imePadding()
         ) {
             // Top: Collapsible Input Section
             InputSection(
@@ -139,7 +143,10 @@ fun MainScreen(
                         .format(Instant.now())
                     exportLauncher.launch("$timestamp.gpx")
                 },
-                onShare = { viewModel.shareGpx(context) }
+                onShare = { viewModel.shareGpx(context) },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .zIndex(10f)
             )
 
             // Bottom: Map with overlays
@@ -147,13 +154,16 @@ fun MainScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .weight(1f)
+                    .clipToBounds()
             ) {
                 // OSMDroid MapView
                 OsmMapView(
                     gpxData = gpxData,
                     useSatellite = useSatellite,
                     onMapReady = { mapViewRef = it },
-                    modifier = Modifier.fillMaxSize()
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clipToBounds()
                 )
 
                 // Route Stats Overlay (top-left of map)

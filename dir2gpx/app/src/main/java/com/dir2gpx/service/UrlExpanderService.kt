@@ -25,8 +25,8 @@ object UrlExpanderService {
     private val client: OkHttpClient = OkHttpClient.Builder()
         .followRedirects(false)
         .followSslRedirects(false)
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(15, TimeUnit.SECONDS)
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(20, TimeUnit.SECONDS)
         .build()
 
     /**
@@ -60,48 +60,63 @@ object UrlExpanderService {
                 .header("Accept-Language", "en-US,en;q=0.9")
                 .build()
 
-            try {
-                client.newCall(request).execute().use { response ->
-                    val code = response.code
-                    if (code in 300..399) {
-                        val location = response.header("Location")
-                            ?: return@withContext currentUrl
+            var hopResolved = false
+            var lastError: Exception? = null
 
-                        // Resolve relative redirects against current URL
-                        val nextUrl = when {
-                            location.startsWith("http://") || location.startsWith("https://") -> location
-                            location.startsWith("intent://") || location.startsWith("android-app://") ->
-                                extractFromIntentUri(location) ?: location
-                            else -> {
-                                val base = currentUrl.substringBefore("?").substringBeforeLast("/")
-                                "$base/${location.removePrefix("/")}"
+            for (attempt in 1..3) {
+                try {
+                    client.newCall(request).execute().use { response ->
+                        val code = response.code
+                        if (code in 300..399) {
+                            val location = response.header("Location")
+                                ?: return@withContext currentUrl
+
+                            // Resolve relative redirects against current URL
+                            val nextUrl = when {
+                                location.startsWith("http://") || location.startsWith("https://") -> location
+                                location.startsWith("intent://") || location.startsWith("android-app://") ->
+                                    extractFromIntentUri(location) ?: location
+                                else -> {
+                                    val base = currentUrl.substringBefore("?").substringBeforeLast("/")
+                                    "$base/${location.removePrefix("/")}"
+                                }
                             }
-                        }
 
-                        currentUrl = nextUrl
-                        redirectCount++
-                    } else if (code in 200..299) {
-                        // Check for meta refresh, og:url, canonical link, or JS redirects in the body
-                        val body = response.body?.string() ?: return@withContext currentUrl
-
-                        val extractedUrl = extractTargetUrlFromBody(body)
-                        if (extractedUrl != null && extractedUrl != currentUrl) {
-                            currentUrl = extractedUrl
+                            currentUrl = nextUrl
                             redirectCount++
+                            hopResolved = true
+                        } else if (code in 200..299) {
+                            // Check for meta refresh, og:url, canonical link, or JS redirects in the body
+                            val body = response.body?.string() ?: return@withContext currentUrl
+
+                            val extractedUrl = extractTargetUrlFromBody(body)
+                            if (extractedUrl != null && extractedUrl != currentUrl) {
+                                currentUrl = extractedUrl
+                                redirectCount++
+                                hopResolved = true
+                            } else {
+                                return@withContext currentUrl
+                            }
                         } else {
+                            // Non-2xx/3xx code, return the best URL we got so far
                             return@withContext currentUrl
                         }
-                    } else {
-                        // Non-2xx/3xx code, return the best URL we got so far
-                        return@withContext currentUrl
+                    }
+                    break
+                } catch (e: Exception) {
+                    lastError = e
+                    if (attempt < 3) {
+                        kotlinx.coroutines.delay(600L * attempt)
                     }
                 }
-            } catch (e: Exception) {
+            }
+
+            if (!hopResolved && lastError != null) {
                 // If network fails during redirect hops, return the last resolved URL
                 if (redirectCount > 0) {
                     return@withContext currentUrl
                 }
-                throw IOException("Failed to resolve URL: ${e.message}", e)
+                throw IOException("Failed to resolve URL: ${lastError.message}", lastError)
             }
         }
 

@@ -3,24 +3,25 @@ package com.dir2gpx.service
 import com.dir2gpx.model.PointType
 import com.dir2gpx.model.RoutePoint
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
-import java.net.URI
+import org.json.JSONObject
 import java.net.URLDecoder
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 /**
- * Parses Google Maps Directions URLs to extract route coordinates.
+ * Parses Google Maps Directions URLs to extract route coordinates and waypoints.
  *
  * Supports multiple URL formats:
- * - Path-based: `google.com/maps/dir/lat1,lon1/lat2,lon2/...`
- * - Place-named paths: `google.com/maps/dir/Berlin/Munich` (via geocoding fallback)
+ * - Path-based: `google.com/maps/dir/lat1,lon1/lat2,lon2/...` or `google.com/maps/dir/Stop1/Stop2/...`
+ * - Place-named paths: `google.com/maps/dir/Taipei/Taichung/Tainan` (via geocoding fallback)
  * - Query-based: `?origin=lat,lon&destination=lat,lon&waypoints=lat,lon|lat,lon`
  * - Data parameter patterns: `!1d<lon>!2d<lat>`, `!2d<lat>!1d<lon>`, `!3d<lat>!4d<lon>`
- * - `@lat,lon,zoom` viewport markers
+ * - Viewport filtering to avoid capturing `@lat,lon,zoom` as route points.
  */
 object CoordinateParser {
 
@@ -46,7 +47,7 @@ object CoordinateParser {
      * @throws IllegalArgumentException if fewer than 2 coordinates could be found.
      */
     fun parse(url: String): List<RoutePoint> {
-        val decodedUrl = URLDecoder.decode(url, "UTF-8")
+        val decodedUrl = safeDecodeUrl(url)
 
         // 1. Try path-based parsing first (/maps/dir/lat1,lon1/lat2,lon2)
         val pathPoints = parsePathSegments(decodedUrl)
@@ -66,7 +67,7 @@ object CoordinateParser {
             return classifyPoints(dataPoints)
         }
 
-        // 4. Fallback: try to extract any coordinate pairs from the entire URL
+        // 4. Fallback: try to extract any coordinate pairs from the URL (excluding @viewport)
         val fallbackPoints = extractAllCoordinates(decodedUrl)
         if (fallbackPoints.size >= 2) {
             return classifyPoints(fallbackPoints)
@@ -80,23 +81,84 @@ object CoordinateParser {
     }
 
     /**
-     * Parses coordinates from a Google Maps URL with asynchronous OpenStreetMap
-     * Nominatim geocoding fallback for URLs that contain place names (e.g. /maps/dir/Paris/Lyon).
+     * Parses coordinates from a Google Maps URL with asynchronous geocoding fallback
+     * for URLs that contain place names (e.g. /maps/dir/Taipei/Taichung/Tainan).
+     *
+     * Ensures all destinations along the route (even > 5 stops) are preserved and resolved in order.
      */
     suspend fun parseWithGeocoding(url: String): List<RoutePoint> = withContext(Dispatchers.IO) {
-        // Try direct coordinate extraction first
+        val decodedUrl = safeDecodeUrl(url)
+
+        val pathStops = extractRawPathSegments(decodedUrl)
+        val queryStops = extractRawQueryStops(decodedUrl)
+        val namedStops = when {
+            pathStops.size >= 2 -> pathStops
+            queryStops.size >= 2 -> queryStops
+            else -> emptyList()
+        }
+
+        // 1. Try direct coordinate parsing first (handles data= !3d!4d or !1d!2d, path coords, query coords)
         try {
             val directPoints = parse(url)
             if (directPoints.size >= 2) {
-                return@withContext directPoints
+                // If names in path/query match the count of parsed coordinates, preserve the exact names!
+                if (namedStops.size == directPoints.size) {
+                    val namedPoints = directPoints.mapIndexed { i, pt ->
+                        pt.copy(name = namedStops[i])
+                    }
+                    return@withContext classifyPoints(namedPoints)
+                }
+                // If directPoints has at least as many points as named stops, it captured everything
+                if (namedStops.isEmpty() || directPoints.size >= namedStops.size) {
+                    return@withContext directPoints
+                }
             }
         } catch (_: Exception) {
-            // Direct parsing didn't find enough points, proceed to named place extraction & geocoding
+            // Direct extraction failed, proceed to ordered resolution and geocoding
         }
 
-        val decodedUrl = URLDecoder.decode(url, "UTF-8")
-        val placeNames = extractPlaceNames(decodedUrl)
+        // 2. If explicit ordered stops exist from path or query, resolve them in order
+        if (namedStops.size >= 2) {
+            val resolvedPoints = mutableListOf<RoutePoint>()
+            var needsGeocode = false
 
+            for (stop in namedStops) {
+                val directCoord = parseCoordinate(stop)
+                if (directCoord != null) {
+                    resolvedPoints.add(directCoord)
+                } else {
+                    needsGeocode = true
+                    break
+                }
+            }
+
+            if (!needsGeocode && resolvedPoints.size >= 2) {
+                return@withContext classifyPoints(resolvedPoints)
+            }
+
+            // Need to geocode place names in the ordered sequence
+            val fullyResolved = mutableListOf<RoutePoint>()
+            for ((index, stop) in namedStops.withIndex()) {
+                val direct = parseCoordinate(stop)
+                if (direct != null) {
+                    fullyResolved.add(direct)
+                } else {
+                    if (index > 0) {
+                        delay(150) // Be polite to geocoding services between requests
+                    }
+                    val geocoded = geocodePlace(stop)
+                    if (geocoded != null) {
+                        fullyResolved.add(geocoded.copy(name = stop))
+                    }
+                }
+            }
+
+            if (fullyResolved.size >= 2) {
+                return@withContext classifyPoints(fullyResolved)
+            }
+        }
+
+        val placeNames = extractPlaceNames(decodedUrl)
         if (placeNames.size < 2) {
             throw IllegalArgumentException(
                 "Could not extract origin and destination from URL: $url"
@@ -104,7 +166,10 @@ object CoordinateParser {
         }
 
         val geocodedPoints = mutableListOf<RoutePoint>()
-        for (name in placeNames) {
+        for ((index, name) in placeNames.withIndex()) {
+            if (index > 0) {
+                delay(150)
+            }
             val point = geocodePlace(name)
             if (point != null) {
                 geocodedPoints.add(point)
@@ -124,72 +189,135 @@ object CoordinateParser {
      * Extracts named place strings from path segments or query parameters.
      */
     fun extractPlaceNames(url: String): List<String> {
-        val uri = try {
-            URI(url.replace(" ", "%20"))
-        } catch (e: Exception) {
-            null
-        }
-
+        val decoded = safeDecodeUrl(url)
         val places = mutableListOf<String>()
 
-        // 1. Path segments after /dir/
-        val path = uri?.path ?: ""
-        val dirIndex = path.indexOf("/dir/")
-        if (dirIndex != -1) {
-            val segments = path.substring(dirIndex + 5).split("/")
-                .map { it.trim().replace("+", " ") }
-                .filter { it.isNotEmpty() && !it.startsWith("@") && !it.startsWith("data=") }
-
-            for (seg in segments) {
-                if (COORD_PAIR_REGEX.matches(seg)) {
-                    continue // Already handled by coordinate parser
-                }
+        val pathSegments = extractRawPathSegments(decoded)
+        for (seg in pathSegments) {
+            if (!COORD_PAIR_REGEX.matches(seg)) {
                 places.add(seg)
             }
         }
 
-        // 2. Query parameters (origin, destination, waypoints)
         if (places.size < 2) {
-            val query = url.substringAfter("?", "")
-            val params = query.split("&").associate {
-                val key = it.substringBefore("=")
-                val value = it.substringAfter("=", "").replace("+", " ")
-                key to value
+            val queryStops = extractRawQueryStops(decoded)
+            for (stop in queryStops) {
+                if (!COORD_PAIR_REGEX.matches(stop)) {
+                    places.add(stop)
+                }
             }
-
-            params["origin"]?.takeIf { it.isNotBlank() }?.let { places.add(it) }
-            params["waypoints"]?.split("|")?.forEach { wp ->
-                val clean = wp.removePrefix("via:").trim()
-                if (clean.isNotBlank()) places.add(clean)
-            }
-            params["destination"]?.takeIf { it.isNotBlank() }?.let { places.add(it) }
         }
 
         return places
     }
 
     /**
-     * Geocodes a place name string using OpenStreetMap's Nominatim search API.
+     * Extracts raw path segments after `/dir/` without relying on `java.net.URI`,
+     * preventing crashes on non-ASCII / Chinese characters.
+     */
+    private fun extractRawPathSegments(url: String): List<String> {
+        val dirIndex = url.indexOf("/dir/")
+        if (dirIndex == -1) return emptyList()
+
+        val afterDir = url.substring(dirIndex + 5).substringBefore("?")
+        return afterDir.split("/")
+            .map { it.trim().replace("+", " ") }
+            .filter { seg ->
+                seg.isNotEmpty() &&
+                    !seg.startsWith("@") &&
+                    !seg.startsWith("data=") &&
+                    !seg.startsWith("am=") &&
+                    !seg.startsWith("entry=")
+            }
+    }
+
+    /**
+     * Extracts raw stops from query parameters (origin, waypoints, destination).
+     */
+    private fun extractRawQueryStops(url: String): List<String> {
+        val queryString = url.substringAfter("?", "")
+        if (queryString.isEmpty()) return emptyList()
+
+        val params = queryString.split("&").associate { param ->
+            val key = param.substringBefore("=")
+            val value = param.substringAfter("=", "").replace("+", " ")
+            key to value
+        }
+
+        val stops = mutableListOf<String>()
+        params["origin"]?.takeIf { it.isNotBlank() }?.let { stops.add(it) }
+
+        // Split waypoints by pipe (| or %7C)
+        params["waypoints"]?.split("|", "%7C", "%7c")?.forEach { wp ->
+            val clean = wp.removePrefix("via:").trim()
+            if (clean.isNotBlank()) {
+                stops.add(clean)
+            }
+        }
+
+        params["destination"]?.takeIf { it.isNotBlank() }?.let { stops.add(it) }
+        return stops
+    }
+
+    /**
+     * Geocodes a place name string using Photon (primary, fast, multi-language)
+     * with Nominatim fallback.
      */
     suspend fun geocodePlace(placeName: String): RoutePoint? = withContext(Dispatchers.IO) {
         val trimmed = placeName.trim()
         if (trimmed.isEmpty()) return@withContext null
 
         // Check if it's already a coordinate
-        COORD_PAIR_REGEX.find(trimmed)?.let { match ->
-            val lat = match.groupValues[1].toDoubleOrNull()
-            val lon = match.groupValues[2].toDoubleOrNull()
-            if (lat != null && lon != null) {
-                return@withContext RoutePoint(latitude = lat, longitude = lon, name = trimmed)
-            }
-        }
+        parseCoordinate(trimmed)?.let { return@withContext it }
 
+        // 1. Try Photon geocoder (OpenStreetMap-based, high performance, lenient rate limits)
         try {
             val encodedQuery = URLEncoder.encode(trimmed, "UTF-8")
-            val url = "https://nominatim.openstreetmap.org/search?q=$encodedQuery&format=json&limit=1"
+            val photonUrl = "https://photon.komoot.io/api/?q=$encodedQuery&limit=1"
 
             val request = Request.Builder()
-                .url(url)
+                .url(photonUrl)
+                .header("User-Agent", "Dir2GPX-Android/1.0 (https://github.com/dir2gpx)")
+                .header("Accept", "application/json")
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                if (response.isSuccessful) {
+                    val body = response.body?.string()
+                    if (!body.isNullOrEmpty()) {
+                        val root = JSONObject(body)
+                        val features = root.optJSONArray("features")
+                        if (features != null && features.length() > 0) {
+                            val first = features.getJSONObject(0)
+                            val geometry = first.optJSONObject("geometry")
+                            val coordinates = geometry?.optJSONArray("coordinates")
+                            if (coordinates != null && coordinates.length() >= 2) {
+                                val lon = coordinates.getDouble(0)
+                                val lat = coordinates.getDouble(1)
+                                val props = first.optJSONObject("properties")
+                                val name = props?.optString("name")?.ifEmpty { trimmed } ?: trimmed
+
+                                return@withContext RoutePoint(
+                                    latitude = lat,
+                                    longitude = lon,
+                                    name = name
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            // Fall through to Nominatim
+        }
+
+        // 2. Fallback to OpenStreetMap Nominatim
+        try {
+            val encodedQuery = URLEncoder.encode(trimmed, "UTF-8")
+            val nominatimUrl = "https://nominatim.openstreetmap.org/search?q=$encodedQuery&format=json&limit=1"
+
+            val request = Request.Builder()
+                .url(nominatimUrl)
                 .header("User-Agent", "Dir2GPX-Android/1.0 (https://github.com/dir2gpx)")
                 .header("Accept", "application/json")
                 .build()
@@ -218,47 +346,16 @@ object CoordinateParser {
     }
 
     private fun parsePathSegments(url: String): List<RoutePoint> {
-        val uri = try {
-            URI(url.replace(" ", "%20"))
-        } catch (e: Exception) {
-            return emptyList()
-        }
-
-        val path = uri.path ?: return emptyList()
-        val dirIndex = path.indexOf("/dir/")
-        if (dirIndex == -1) return emptyList()
-
-        val afterDir = path.substring(dirIndex + 5)
-        val segments = afterDir.split("/")
-            .map { it.trim() }
-            .filter { it.isNotEmpty() && !it.startsWith("@") && !it.startsWith("data=") }
-
+        val segments = extractRawPathSegments(url)
         return segments.mapNotNull { segment ->
             parseCoordinate(segment)
         }
     }
 
     private fun parseQueryParameters(url: String): List<RoutePoint> {
-        val queryString = url.substringAfter("?", "")
-        if (queryString.isEmpty()) return emptyList()
-
-        val params = queryString.split("&").associate { param ->
-            val (key, value) = if (param.contains("=")) {
-                param.substringBefore("=") to param.substringAfter("=")
-            } else {
-                param to ""
-            }
-            key to value
-        }
-
-        val points = mutableListOf<RoutePoint>()
-        params["origin"]?.let { parseCoordinate(it) }?.also { points.add(it) }
-        params["waypoints"]?.split("|")?.forEach { wp ->
-            parseCoordinate(wp.removePrefix("via:"))?.also { points.add(it) }
-        }
-        params["destination"]?.let { parseCoordinate(it) }?.also { points.add(it) }
-
-        return points
+        val stops = extractRawQueryStops(url)
+        val points = stops.mapNotNull { parseCoordinate(it) }
+        return if (points.size >= 2) points else emptyList()
     }
 
     private fun parseDataParameter(url: String): List<RoutePoint> {
@@ -297,9 +394,11 @@ object CoordinateParser {
     }
 
     private fun extractAllCoordinates(url: String): List<RoutePoint> {
+        // Remove viewport @lat,lon,zoom before searching for coordinates
+        val cleanUrl = VIEWPORT_REGEX.replace(url, "")
         val points = mutableListOf<RoutePoint>()
 
-        LABELED_COORD_REGEX.findAll(url).forEach { match ->
+        LABELED_COORD_REGEX.findAll(cleanUrl).forEach { match ->
             val lat = match.groupValues[1].toDoubleOrNull() ?: return@forEach
             val lon = match.groupValues[2].toDoubleOrNull() ?: return@forEach
 
@@ -362,6 +461,14 @@ object CoordinateParser {
                     type = PointType.VIA
                 )
             }
+        }
+    }
+
+    private fun safeDecodeUrl(url: String): String {
+        return try {
+            URLDecoder.decode(url, "UTF-8")
+        } catch (_: Exception) {
+            url
         }
     }
 }

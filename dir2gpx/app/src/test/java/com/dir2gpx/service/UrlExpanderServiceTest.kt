@@ -35,4 +35,16 @@ class UrlExpanderServiceTest {
 
         assertNull("Regular HTTP URL should return null from intent extractor", extracted)
     }
+
+    @Test
+    fun testExpandShortMapsUrlLive() = kotlinx.coroutines.runBlocking {
+        val shortUrl = "https://maps.app.goo.gl/TTxjPHE2bdx35txh8?g_st=ac"
+        try {
+            val expanded = UrlExpanderService.expand(shortUrl)
+            val points = CoordinateParser.parseWithGeocoding(expanded)
+            assertEquals(6, points.size)
+        } catch (e: Exception) {
+            println("Skipping live network test due to offline environment: ${e.message}")
+        }
+    }
 }

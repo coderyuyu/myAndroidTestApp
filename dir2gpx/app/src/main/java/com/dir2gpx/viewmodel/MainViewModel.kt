@@ -245,19 +245,34 @@ class MainViewModel : ViewModel() {
         startTime: Instant,
         endTime: Instant
     ): List<RoutePoint> {
-        if (timedTrackPoints.isEmpty()) {
+        if (timedTrackPoints.isEmpty() || waypoints.isEmpty()) {
             return HaversineCalculator.interpolateTimestamps(waypoints, startTime, endTime)
         }
 
-        return waypoints.map { waypoint ->
-            // Find the closest track point to this waypoint
-            val closest = timedTrackPoints.minByOrNull { trackPt ->
-                HaversineCalculator.distanceKm(
-                    waypoint.latitude, waypoint.longitude,
-                    trackPt.latitude, trackPt.longitude
-                )
+        var lastTrackIndex = 0
+        return waypoints.mapIndexed { index, waypoint ->
+            when (index) {
+                0 -> waypoint.copy(timestamp = startTime)
+                waypoints.lastIndex -> waypoint.copy(timestamp = endTime)
+                else -> {
+                    var bestIdx = lastTrackIndex
+                    var bestDist = Double.MAX_VALUE
+                    for (i in lastTrackIndex until timedTrackPoints.size) {
+                        val tp = timedTrackPoints[i]
+                        val dist = HaversineCalculator.distanceKm(
+                            waypoint.latitude, waypoint.longitude,
+                            tp.latitude, tp.longitude
+                        )
+                        if (dist < bestDist) {
+                            bestDist = dist
+                            bestIdx = i
+                        }
+                    }
+                    lastTrackIndex = bestIdx
+                    val matchedTime = timedTrackPoints[bestIdx].timestamp ?: startTime
+                    waypoint.copy(timestamp = matchedTime)
+                }
             }
-            waypoint.copy(timestamp = closest?.timestamp ?: startTime)
         }
     }
 

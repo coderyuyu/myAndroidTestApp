@@ -51,7 +51,7 @@ object OsrmRoutingService {
             String.format(Locale.US, "%.6f,%.6f", pt.longitude, pt.latitude)
         }
 
-        return "$BASE_URL/$coordString?overview=full&geometries=polyline&steps=true"
+        return "$BASE_URL/$coordString?overview=full&geometries=polyline"
     }
 
     /**
