@@ -5,8 +5,11 @@ import android.graphics.Paint.Cap
 import android.graphics.Paint.Join
 import android.graphics.Paint.Style
 import android.util.LruCache
+import com.gpxami.app.data.model.AdminDivisionConfig
 import com.gpxami.app.data.model.GpxTrack
 import com.gpxami.app.data.model.InterpolatedPoint
+import com.gpxami.app.data.model.Wpt
+import com.gpxami.app.data.model.WptVisibilityMode
 import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileOutputStream
@@ -82,7 +85,97 @@ class MapRenderer(
 
     companion object {
         const val BLACK_BORDER_WIDTH = 3.0f // 固定使用現有細線的 size (3f)
+
+        /**
+         * Converts (lat, lon) to Web Mercator world pixel coordinates at zoom level Z.
+         */
+        fun projectLatLon(lat: Double, lon: Double, zoom: Double): Pair<Double, Double> {
+            val scale = 256.0 * 2.0.pow(zoom)
+            val x = ((lon + 180.0) / 360.0) * scale
+
+            val sinLat = sin(Math.toRadians(lat.coerceIn(-85.05112878, 85.05112878)))
+            val y = (0.5 - ln((1.0 + sinLat) / (1.0 - sinLat)) / (4.0 * PI)) * scale
+            return Pair(x, y)
+        }
+
+        /**
+         * Computes optimal camera zoom to view either the whole track or a focused tracking window.
+         */
+        fun calculateOptimalZoom(track: GpxTrack, viewportWidth: Float, viewportHeight: Float): Double {
+            return calculateOptimalOverviewZoom(track, viewportWidth, viewportHeight, 0f, false)
+        }
+
+        /**
+         * Computes optimal overview camera zoom to guarantee 100% of the route and waypoints are visible,
+         * taking into account Web Mercator projection, rotation angle, and bottom elevation profile overlay.
+         */
+        fun calculateOptimalOverviewZoom(
+            track: GpxTrack,
+            viewportWidth: Float,
+            viewportHeight: Float,
+            rotationDegrees: Float = 0f,
+            showElevationProfile: Boolean = true
+        ): Double {
+            if (track.points.isEmpty()) return 12.0
+
+            var minWx = Double.MAX_VALUE
+            var maxWx = -Double.MAX_VALUE
+            var minWy = Double.MAX_VALUE
+            var maxWy = -Double.MAX_VALUE
+
+            for (pt in track.points) {
+                val (wx, wy) = projectLatLon(pt.lat, pt.lon, 0.0)
+                minWx = min(minWx, wx)
+                maxWx = max(maxWx, wx)
+                minWy = min(minWy, wy)
+                maxWy = max(maxWy, wy)
+            }
+            for (wpt in track.waypoints) {
+                val (wx, wy) = projectLatLon(wpt.lat, wpt.lon, 0.0)
+                minWx = min(minWx, wx)
+                maxWx = max(maxWx, wx)
+                minWy = min(minWy, wy)
+                maxWy = max(maxWy, wy)
+            }
+
+            val spanX0 = max(0.0001, maxWx - minWx)
+            val spanY0 = max(0.0001, maxWy - minWy)
+
+            val rad = Math.toRadians(rotationDegrees.toDouble())
+            val cosR = abs(cos(rad))
+            val sinR = abs(sin(rad))
+
+            val rotatedSpanX0 = spanX0 * cosR + spanY0 * sinR
+            val rotatedSpanY0 = spanX0 * sinR + spanY0 * cosR
+
+            // Usable screen area with safety margins so path is never clipped
+            val usableW = max(100f, viewportWidth * 0.82f)
+            val usableH = if (showElevationProfile) {
+                max(100f, viewportHeight * 0.65f) // Accounts for bottom 20% elevation profile + top title + margins
+            } else {
+                max(100f, viewportHeight * 0.80f)
+            }
+
+            val zoomX = ln(usableW.toDouble() / rotatedSpanX0) / ln(2.0)
+            val zoomY = ln(usableH.toDouble() / rotatedSpanY0) / ln(2.0)
+
+            return min(zoomX, zoomY).coerceIn(6.0, 18.0)
+        }
     }
+
+    fun projectLatLon(lat: Double, lon: Double, zoom: Double): Pair<Double, Double> =
+        Companion.projectLatLon(lat, lon, zoom)
+
+    fun calculateOptimalZoom(track: GpxTrack, viewportWidth: Float, viewportHeight: Float): Double =
+        Companion.calculateOptimalZoom(track, viewportWidth, viewportHeight)
+
+    fun calculateOptimalOverviewZoom(
+        track: GpxTrack,
+        viewportWidth: Float,
+        viewportHeight: Float,
+        rotationDegrees: Float = 0f,
+        showElevationProfile: Boolean = true
+    ): Double = Companion.calculateOptimalOverviewZoom(track, viewportWidth, viewportHeight, rotationDegrees, showElevationProfile)
 
     // Outer black border casing (兩邊包黑線，固定細線 size)
     private val routeBlackCasingPaint = Paint().apply {
@@ -111,7 +204,7 @@ class MapRenderer(
     }
 
     private val markerHaloPaint = Paint().apply {
-        color = Color.argb(80, 0, 242, 254)
+        color = 0x5000F2FE.toInt()
         style = Style.FILL
         isAntiAlias = true
     }
@@ -124,7 +217,7 @@ class MapRenderer(
     }
 
     private val markerBodyPaint = Paint().apply {
-        color = Color.rgb(6, 182, 212)
+        color = 0xFF06B6D4.toInt()
         style = Style.FILL
         isAntiAlias = true
     }
@@ -137,30 +230,6 @@ class MapRenderer(
 
     private val pinPaint = Paint().apply {
         isAntiAlias = true
-    }
-
-    /**
-     * Converts (lat, lon) to Web Mercator world pixel coordinates at zoom level Z.
-     */
-    fun projectLatLon(lat: Double, lon: Double, zoom: Double): Pair<Double, Double> {
-        val scale = 256.0 * 2.0.pow(zoom)
-        val x = ((lon + 180.0) / 360.0) * scale
-
-        val sinLat = sin(Math.toRadians(lat.coerceIn(-85.05112878, 85.05112878)))
-        val y = (0.5 - ln((1.0 + sinLat) / (1.0 - sinLat)) / (4.0 * PI)) * scale
-        return Pair(x, y)
-    }
-
-    /**
-     * Computes optimal camera zoom to view either the whole track or a focused tracking window.
-     */
-    fun calculateOptimalZoom(track: GpxTrack, viewportWidth: Float, viewportHeight: Float): Double {
-        val spanLat = max(0.005, track.bounds.spanLat)
-        val spanLon = max(0.005, track.bounds.spanLon)
-
-        val zoomX = ln((viewportWidth * 360.0) / (256.0 * spanLon * 1.5)) / ln(2.0)
-        val zoomY = ln((viewportHeight * 180.0) / (256.0 * spanLat * 1.5)) / ln(2.0)
-        return min(zoomX, zoomY).coerceIn(8.0, 18.0)
     }
 
     /**
@@ -187,7 +256,12 @@ class MapRenderer(
         markerColor: Int = Color.rgb(6, 182, 212),
         trackWidth: Float = 5.0f,
         trackColor: Int = Color.rgb(0, 242, 254),
-        blackBorderWidth: Float = BLACK_BORDER_WIDTH
+        blackBorderWidth: Float = BLACK_BORDER_WIDTH,
+        wptVisibilityMode: WptVisibilityMode = WptVisibilityMode.ALWAYS_SHOW,
+        wptAlphaMap: Map<Int, Float>? = null,
+        startWpt: Wpt? = null,
+        endWpt: Wpt? = null,
+        adminDivisionConfig: AdminDivisionConfig = AdminDivisionConfig.LEVEL_1_ONLY
     ) {
         if (track.points.isEmpty()) {
             canvas.drawRect(0f, 0f, width, height, bgPaint)
@@ -290,17 +364,58 @@ class MapRenderer(
         val endScreen = toScreen(endPt.lat, endPt.lon)
         drawRouteEndPoint(canvas, endScreen.first, endScreen.second, markerRadius)
 
-        // 6.5 Draw Static Red Waypoint Points on Route (not animated)
-        for (wpt in track.waypoints) {
-            val (wx, wy) = toScreen(wpt.lat, wpt.lon)
-            drawWaypointMarker(
-                canvas = canvas,
-                x = wx,
-                y = wy,
-                name = if (showWaypointLabels) wpt.name else null,
-                rotationDegrees = rotationDegrees,
-                labelTextSize = wptLabelTextSize
-            )
+        // 6.1 Draw Permanently Visible Start and End WPT Labels with loop track collision offset
+        val startLabelText = startWpt?.formatDisplayLabel(adminDivisionConfig) ?: "起點"
+        val endLabelText = endWpt?.formatDisplayLabel(adminDivisionConfig) ?: "迄點"
+
+        // Check if Start and End share the same coordinates or collide on screen (e.g. loop track)
+        val screenDist = hypot(firstScreen.first - endScreen.first, firstScreen.second - endScreen.second)
+        val isLoopCollision = screenDist < (markerRadius * 4f + 24f)
+
+        drawEndpointLabel(
+            canvas = canvas,
+            x = firstScreen.first,
+            y = firstScreen.second,
+            text = startLabelText,
+            rotationDegrees = rotationDegrees,
+            labelTextSize = wptLabelTextSize,
+            accentColor = Color.argb(255, 16, 185, 129), // Emerald Green
+            radius = markerRadius,
+            isOffsetDown = false
+        )
+
+        drawEndpointLabel(
+            canvas = canvas,
+            x = endScreen.first,
+            y = endScreen.second,
+            text = endLabelText,
+            rotationDegrees = rotationDegrees,
+            labelTextSize = wptLabelTextSize,
+            accentColor = Color.argb(255, 239, 68, 68), // Rose Red
+            radius = markerRadius,
+            isOffsetDown = isLoopCollision
+        )
+
+        // 6.5 Draw Waypoint Points on Route (supporting fade-in/fade-out & visibility mode)
+        for (i in track.waypoints.indices) {
+            val wpt = track.waypoints[i]
+            val alpha = if (wptVisibilityMode == WptVisibilityMode.ALWAYS_SHOW) {
+                1.0f
+            } else {
+                wptAlphaMap?.get(i) ?: 0.0f
+            }
+            if (alpha > 0.005f) {
+                val (wx, wy) = toScreen(wpt.lat, wpt.lon)
+                drawWaypointMarker(
+                    canvas = canvas,
+                    x = wx,
+                    y = wy,
+                    name = if (showWaypointLabels) wpt.name else null,
+                    rotationDegrees = rotationDegrees,
+                    labelTextSize = wptLabelTextSize,
+                    alpha = alpha
+                )
+            }
         }
 
         // 7. Draw Moving Vehicle Marker with Orientation & Pulse Ring
@@ -720,11 +835,15 @@ class MapRenderer(
         y: Float,
         name: String?,
         rotationDegrees: Float = 0f,
-        labelTextSize: Float = 20f
+        labelTextSize: Float = 20f,
+        alpha: Float = 1.0f
     ) {
+        val clampedAlpha = alpha.coerceIn(0f, 1f)
+        if (clampedAlpha <= 0.005f) return
+
         // 1. Soft glowing green outer halo
         val haloPaint = Paint().apply {
-            color = Color.argb(80, 16, 185, 129) // Translucent glowing green #10B981
+            color = Color.argb((80 * clampedAlpha).toInt(), 16, 185, 129) // Translucent glowing green #10B981
             style = Style.FILL
             isAntiAlias = true
         }
@@ -732,7 +851,7 @@ class MapRenderer(
 
         // 2. White outer contrast ring for visibility across all map styles
         val whiteBorder = Paint().apply {
-            color = Color.WHITE
+            color = Color.argb((255 * clampedAlpha).toInt(), 255, 255, 255)
             style = Style.STROKE
             strokeWidth = 1.5f
             isAntiAlias = true
@@ -741,7 +860,7 @@ class MapRenderer(
 
         // 3. Vibrant solid green circle body
         val greenBody = Paint().apply {
-            color = Color.rgb(16, 185, 129) // Vibrant emerald green #10B981
+            color = Color.argb((255 * clampedAlpha).toInt(), 16, 185, 129) // Vibrant emerald green #10B981
             style = Style.FILL
             isAntiAlias = true
         }
@@ -749,7 +868,7 @@ class MapRenderer(
 
         // 4. Center bright white bullseye dot
         val centerDot = Paint().apply {
-            color = Color.WHITE
+            color = Color.argb((255 * clampedAlpha).toInt(), 255, 255, 255)
             style = Style.FILL
             isAntiAlias = true
         }
@@ -759,7 +878,7 @@ class MapRenderer(
         if (!name.isNullOrBlank()) {
             val labelText = name.trim()
             val textPaint = Paint().apply {
-                color = Color.WHITE
+                color = Color.argb((255 * clampedAlpha).toInt(), 255, 255, 255)
                 textSize = labelTextSize
                 typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
                 textAlign = Paint.Align.CENTER
@@ -777,12 +896,12 @@ class MapRenderer(
             val pillRect = RectF(pillLeft, pillTop, pillRight, pillBottom)
 
             val pillBgPaint = Paint().apply {
-                color = Color.argb(220, 15, 23, 42) // Slate 900
+                color = Color.argb((220 * clampedAlpha).toInt(), 15, 23, 42) // Slate 900
                 style = Style.FILL
                 isAntiAlias = true
             }
             val pillBorderPaint = Paint().apply {
-                color = Color.argb(160, 16, 185, 129) // Emerald green accent border
+                color = Color.argb((160 * clampedAlpha).toInt(), 16, 185, 129) // Emerald green accent border
                 style = Style.STROKE
                 strokeWidth = 1.2f
                 isAntiAlias = true
@@ -798,6 +917,80 @@ class MapRenderer(
             canvas.drawText(labelText, 0f, pillBottom - pillPaddingV - 2f, textPaint)
             canvas.restore()
         }
+    }
+
+    /**
+     * Draws a permanently visible billboard text label for Start or End waypoints.
+     * Features counter-rotation so text remains upright, sleek Slate 900 background,
+     * colored accent border (emerald for start, rose for end), and collision offset support.
+     */
+    private fun drawEndpointLabel(
+        canvas: Canvas,
+        x: Float,
+        y: Float,
+        text: String,
+        rotationDegrees: Float = 0f,
+        labelTextSize: Float = 20f,
+        accentColor: Int,
+        radius: Float = 12f,
+        isOffsetDown: Boolean = false
+    ) {
+        if (text.isBlank()) return
+
+        val labelText = text.trim()
+        val textPaint = Paint().apply {
+            color = Color.WHITE
+            textSize = labelTextSize
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            textAlign = Paint.Align.CENTER
+            isAntiAlias = true
+        }
+        val textBounds = Rect()
+        textPaint.getTextBounds(labelText, 0, labelText.length, textBounds)
+        val textWidth = textPaint.measureText(labelText)
+        val textHeight = if (textBounds.height() > 0) textBounds.height().toFloat() else labelTextSize * 0.8f
+
+        val pillPaddingH = 10f
+        val pillPaddingV = 5f
+        val pillHalfW = (textWidth / 2f) + pillPaddingH
+        val pillHeight = textHeight + pillPaddingV * 2
+
+        val pillRect = if (isOffsetDown) {
+            // Positioned cleanly below marker
+            val pillTop = radius + 6f
+            val pillBottom = pillTop + pillHeight
+            RectF(-pillHalfW, pillTop, pillHalfW, pillBottom)
+        } else {
+            // Positioned cleanly above marker
+            val pillBottom = -radius - 6f
+            val pillTop = pillBottom - pillHeight
+            RectF(-pillHalfW, pillTop, pillHalfW, pillBottom)
+        }
+
+        val pillBgPaint = Paint().apply {
+            color = Color.argb(230, 15, 23, 42) // Slate 900
+            style = Style.FILL
+            isAntiAlias = true
+        }
+        val pillBorderPaint = Paint().apply {
+            color = accentColor
+            style = Style.STROKE
+            strokeWidth = 1.5f
+            isAntiAlias = true
+        }
+
+        canvas.save()
+        canvas.translate(x, y)
+        if (rotationDegrees != 0f) {
+            canvas.rotate(-rotationDegrees)
+        }
+        canvas.drawRoundRect(pillRect, 8f, 8f, pillBgPaint)
+        canvas.drawRoundRect(pillRect, 8f, 8f, pillBorderPaint)
+
+        // Center text vertically inside the pill
+        val textY = pillRect.centerY() + (textHeight / 2f) - textBounds.bottom
+        canvas.drawText(labelText, 0f, textY, textPaint)
+        canvas.restore()
     }
 
     /**

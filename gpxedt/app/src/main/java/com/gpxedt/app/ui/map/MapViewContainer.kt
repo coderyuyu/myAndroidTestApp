@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
 import android.graphics.Color as AndroidColor
+import android.view.MotionEvent
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -19,11 +20,13 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.gpxedt.app.model.GpxData
+import com.gpxedt.app.model.GpxWaypoint
 import com.gpxedt.app.model.TrackPoint
 import com.gpxedt.app.model.Waypoint
 import org.maplibre.android.camera.CameraUpdateFactory
 import org.maplibre.android.geometry.LatLng
 import org.maplibre.android.geometry.LatLngBounds
+import org.maplibre.android.gestures.MoveGestureDetector
 import org.maplibre.android.maps.MapLibreMap
 import org.maplibre.android.maps.MapView
 import org.maplibre.android.maps.Style
@@ -76,6 +79,14 @@ private const val WAYPOINTS_LABEL_SOURCE_ID = "waypoints_label_source"
 private const val WAYPOINTS_LAYER_ID = "waypoints_layer"
 private const val WAYPOINTS_LABEL_LAYER_ID = "waypoints_label_layer"
 private const val WPT_TRIANGLE_ICON_ID = "wpt_triangle_icon"
+private const val WPT_FLAG_RED_ICON_ID = GpxWaypoint.SYM_FLAG_RED
+private const val WPT_FLAG_YELLOW_ICON_ID = GpxWaypoint.SYM_FLAG_YELLOW
+private const val WPT_FLAG_GREEN_ICON_ID = GpxWaypoint.SYM_FLAG_GREEN
+private const val INTERMEDIATE_VERTICES_SOURCE_ID = "intermediate_vertices_source"
+private const val INTERMEDIATE_VERTICES_LAYER_ID = "intermediate_vertices_layer"
+private const val DRAG_PREVIEW_SOURCE_ID = "drag_preview_source"
+private const val DRAG_PREVIEW_LINE_LAYER_ID = "drag_preview_line_layer"
+private const val DRAG_PREVIEW_POINT_LAYER_ID = "drag_preview_point_layer"
 
 @Composable
 fun MapViewContainer(
@@ -86,15 +97,208 @@ fun MapViewContainer(
     mapBoundsTrigger: Int,
     focusLocation: Pair<Double, Double>? = null,
     cameraCenterLocation: Pair<Double, Double>? = null,
+    showTrackpoints: Boolean = true,
+    dragInsertCoordinate: Pair<Double, Double>? = null,
+    dragInsertIndex: Int? = null,
+    movingVertexPosition: Pair<Double, Double>? = null,
+    movingVertexIndex: Int? = null,
     onPointTapped: (Int) -> Unit,
+    onVertexTapped: ((Int) -> Unit)? = null,
+    onStartDragInsertion: ((Double, Double) -> Unit)? = null,
+    onUpdateDragInsertion: ((Double, Double) -> Unit)? = null,
+    onCommitDragInsertion: ((Double, Double) -> Unit)? = null,
+    onCancelDragInsertion: (() -> Unit)? = null,
+    onUpdateMovePosition: ((Double, Double) -> Unit)? = null,
+    onCommitMovePosition: ((Int, Double, Double) -> Unit)? = null,
+    onCancelMovePosition: (() -> Unit)? = null,
     onMapLongClick: (lat: Double, lon: Double) -> Unit,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+
+    // State holder updated on every recomposition so dispatchTouchEvent always reads latest state
+    val touchState = remember {
+        object {
+            var gpxData: GpxData = gpxData
+            var movingVertexIndex: Int? = movingVertexIndex
+            var onVertexTapped: ((Int) -> Unit)? = onVertexTapped
+            var onStartDragInsertion: ((Double, Double) -> Unit)? = onStartDragInsertion
+            var onUpdateDragInsertion: ((Double, Double) -> Unit)? = onUpdateDragInsertion
+            var onCommitDragInsertion: ((Double, Double) -> Unit)? = onCommitDragInsertion
+            var onCancelDragInsertion: (() -> Unit)? = onCancelDragInsertion
+            var onUpdateMovePosition: ((Double, Double) -> Unit)? = onUpdateMovePosition
+            var onCommitMovePosition: ((Int, Double, Double) -> Unit)? = onCommitMovePosition
+            var onCancelMovePosition: (() -> Unit)? = onCancelMovePosition
+        }
+    }
+
+    touchState.gpxData = gpxData
+    touchState.movingVertexIndex = movingVertexIndex
+    touchState.onVertexTapped = onVertexTapped
+    touchState.onStartDragInsertion = onStartDragInsertion
+    touchState.onUpdateDragInsertion = onUpdateDragInsertion
+    touchState.onCommitDragInsertion = onCommitDragInsertion
+    touchState.onCancelDragInsertion = onCancelDragInsertion
+    touchState.onUpdateMovePosition = onUpdateMovePosition
+    touchState.onCommitMovePosition = onCommitMovePosition
+    touchState.onCancelMovePosition = onCancelMovePosition
+
+    val mapHolder = remember { mutableListOf<MapLibreMap>() }
 
     val mapView = remember {
-        MapView(context).apply {
+        object : MapView(context) {
+            private val touchSlop = android.view.ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+            private val density = context.resources.displayMetrics.density
+            private val segmentTouchThresholdPx = 40f * density
+            private val vertexTouchThresholdPx = 36f * density
+
+            private var downX = 0f
+            private var downY = 0f
+            private var isDraggingFromSegment = false
+            private var isDraggingMoveVertex = false
+            private var isTouchDownNearSegment = false
+            private var candidateVertexIndex: Int? = null
+
+            override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+                val map = mapHolder.firstOrNull() ?: return super.dispatchTouchEvent(event)
+                val currentTrack = touchState.gpxData.trackPoints
+
+                when (event.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = event.x
+                        downY = event.y
+                        isDraggingFromSegment = false
+                        isDraggingMoveVertex = false
+                        isTouchDownNearSegment = false
+                        candidateVertexIndex = null
+
+                        val latLng = map.projection.fromScreenLocation(android.graphics.PointF(event.x, event.y))
+
+                        // 1. Move Mode: dragging the selected moving vertex
+                        if (touchState.movingVertexIndex != null) {
+                            isDraggingMoveVertex = true
+                            touchState.onUpdateMovePosition?.invoke(latLng.latitude, latLng.longitude)
+                            return true
+                        }
+
+                        // 2. Vertex Tap candidate check (screen distance <= 36dp)
+                        val closestIdx = com.gpxedt.app.util.GeoSpatialUtil.findClosestVertexIndex(
+                            latLng.latitude, latLng.longitude, currentTrack
+                        )
+                        if (closestIdx != null) {
+                            val pt = currentTrack[closestIdx]
+                            val screenPt = map.projection.toScreenLocation(LatLng(pt.lat, pt.lon))
+                            val dist = kotlin.math.hypot(event.x - screenPt.x, event.y - screenPt.y)
+                            if (dist <= vertexTouchThresholdPx) {
+                                candidateVertexIndex = closestIdx
+                            }
+                        }
+
+                        // 3. Segment Drag candidate check (screen distance <= 40dp)
+                        if (currentTrack.size >= 2) {
+                            val nearest = com.gpxedt.app.util.GeoSpatialUtil.findNearestSegment(
+                                latLng.latitude, latLng.longitude, currentTrack
+                            )
+                            if (nearest != null) {
+                                val projScreen = map.projection.toScreenLocation(
+                                    LatLng(nearest.projectedPoint.lat, nearest.projectedPoint.lon)
+                                )
+                                val segDist = kotlin.math.hypot(event.x - projScreen.x, event.y - projScreen.y)
+                                if (segDist <= segmentTouchThresholdPx) {
+                                    isTouchDownNearSegment = true
+                                }
+                            }
+                        }
+
+                        return super.dispatchTouchEvent(event)
+                    }
+
+                    MotionEvent.ACTION_MOVE -> {
+                        val distMoved = kotlin.math.hypot(event.x - downX, event.y - downY)
+                        val latLng = map.projection.fromScreenLocation(android.graphics.PointF(event.x, event.y))
+
+                        if (isDraggingMoveVertex) {
+                            touchState.onUpdateMovePosition?.invoke(latLng.latitude, latLng.longitude)
+                            return true
+                        }
+
+                        if (isTouchDownNearSegment && distMoved > touchSlop) {
+                            if (!isDraggingFromSegment) {
+                                isDraggingFromSegment = true
+                                // Cancel child gestures so MapLibre map camera doesn't pan
+                                val cancelEvent = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+                                super.dispatchTouchEvent(cancelEvent)
+                                cancelEvent.recycle()
+                                touchState.onStartDragInsertion?.invoke(latLng.latitude, latLng.longitude)
+                            } else {
+                                touchState.onUpdateDragInsertion?.invoke(latLng.latitude, latLng.longitude)
+                            }
+                            return true
+                        }
+
+                        if (isDraggingFromSegment) {
+                            touchState.onUpdateDragInsertion?.invoke(latLng.latitude, latLng.longitude)
+                            return true
+                        }
+
+                        return super.dispatchTouchEvent(event)
+                    }
+
+                    MotionEvent.ACTION_UP -> {
+                        val distMoved = kotlin.math.hypot(event.x - downX, event.y - downY)
+                        val latLng = map.projection.fromScreenLocation(android.graphics.PointF(event.x, event.y))
+
+                        if (isDraggingMoveVertex) {
+                            isDraggingMoveVertex = false
+                            val idx = touchState.movingVertexIndex
+                            if (idx != null) {
+                                touchState.onCommitMovePosition?.invoke(idx, latLng.latitude, latLng.longitude)
+                            }
+                            return true
+                        }
+
+                        if (isDraggingFromSegment) {
+                            isDraggingFromSegment = false
+                            isTouchDownNearSegment = false
+                            touchState.onCommitDragInsertion?.invoke(latLng.latitude, latLng.longitude)
+                            return true
+                        }
+
+                        isTouchDownNearSegment = false
+
+                        if (distMoved < touchSlop && candidateVertexIndex != null) {
+                            val vIdx = candidateVertexIndex!!
+                            candidateVertexIndex = null
+                            touchState.onVertexTapped?.invoke(vIdx)
+                            val cancelEvent = MotionEvent.obtain(event).apply { action = MotionEvent.ACTION_CANCEL }
+                            super.dispatchTouchEvent(cancelEvent)
+                            cancelEvent.recycle()
+                            return true
+                        }
+
+                        return super.dispatchTouchEvent(event)
+                    }
+
+                    MotionEvent.ACTION_CANCEL -> {
+                        if (isDraggingMoveVertex) {
+                            isDraggingMoveVertex = false
+                            touchState.onCancelMovePosition?.invoke()
+                        }
+                        if (isDraggingFromSegment) {
+                            isDraggingFromSegment = false
+                            isTouchDownNearSegment = false
+                            touchState.onCancelDragInsertion?.invoke()
+                        }
+                        isTouchDownNearSegment = false
+                        candidateVertexIndex = null
+                        return super.dispatchTouchEvent(event)
+                    }
+
+                    else -> return super.dispatchTouchEvent(event)
+                }
+            }
+        }.apply {
             onCreate(null)
         }
     }
@@ -117,18 +321,15 @@ fun MapViewContainer(
         }
     }
 
-    val mapHolder = remember { mutableListOf<MapLibreMap>() }
-
     Box(modifier = modifier.fillMaxSize()) {
         AndroidView(
             factory = {
                 mapView.apply {
                     addOnStyleImageMissingListener { id ->
-                        if (id == WPT_TRIANGLE_ICON_ID) {
-                            mapHolder.firstOrNull()?.getStyle { style ->
-                                if (style.getImage(WPT_TRIANGLE_ICON_ID) == null) {
-                                    style.addImage(WPT_TRIANGLE_ICON_ID, createWptTriangleBitmap(context))
-                                }
+                        mapHolder.firstOrNull()?.getStyle { style ->
+                            if (style.getImage(id) == null) {
+                                val color = GpxWaypoint.getFlagColorInt(id)
+                                style.addImage(id, createFlagBitmap(context, color))
                             }
                         }
                     }
@@ -139,12 +340,32 @@ fun MapViewContainer(
 
                         map.setStyle(Style.Builder().fromJson(OSM_STYLE_JSON)) { style ->
                             initMapLayers(style, context)
-                            updateMapData(style, gpxData, startPointerIndex, middlePointerIndex, endPointerIndex, context)
+                            updateMapData(
+                                style, gpxData, startPointerIndex, middlePointerIndex, endPointerIndex,
+                                showTrackpoints, dragInsertCoordinate, dragInsertIndex, movingVertexPosition, movingVertexIndex, context
+                            )
                             zoomToTrackBounds(map, gpxData)
                         }
 
-                        // Map click listener: select closest point
+                        // Map click listener: if tapping near a vertex, open vertex action sheet; else select closest point
                         map.addOnMapClickListener { latLng ->
+                            val screenPt = map.projection.toScreenLocation(latLng)
+                            val density = context.resources.displayMetrics.density
+                            val vertexTouchThresholdPx = 36f * density
+
+                            val closestVertexIdx = com.gpxedt.app.util.GeoSpatialUtil.findClosestVertexIndex(
+                                latLng.latitude, latLng.longitude, gpxData.trackPoints
+                            )
+                            if (closestVertexIdx != null) {
+                                val pt = gpxData.trackPoints[closestVertexIdx]
+                                val vertexScreen = map.projection.toScreenLocation(LatLng(pt.lat, pt.lon))
+                                val dist = kotlin.math.hypot(screenPt.x - vertexScreen.x, screenPt.y - vertexScreen.y)
+                                if (dist <= vertexTouchThresholdPx) {
+                                    onVertexTapped?.invoke(closestVertexIdx)
+                                    return@addOnMapClickListener true
+                                }
+                            }
+
                             val closestIdx = findClosestPointIndex(latLng, gpxData.trackPoints)
                             if (closestIdx != null) {
                                 onPointTapped(closestIdx)
@@ -167,9 +388,15 @@ fun MapViewContainer(
     }
 
     // Reactively update layers when data or pointer positions change
-    LaunchedEffect(gpxData, startPointerIndex, middlePointerIndex, endPointerIndex) {
+    LaunchedEffect(
+        gpxData, startPointerIndex, middlePointerIndex, endPointerIndex,
+        showTrackpoints, dragInsertCoordinate, dragInsertIndex, movingVertexPosition, movingVertexIndex
+    ) {
         mapHolder.firstOrNull()?.getStyle { style ->
-            updateMapData(style, gpxData, startPointerIndex, middlePointerIndex, endPointerIndex, context)
+            updateMapData(
+                style, gpxData, startPointerIndex, middlePointerIndex, endPointerIndex,
+                showTrackpoints, dragInsertCoordinate, dragInsertIndex, movingVertexPosition, movingVertexIndex, context
+            )
         }
     }
 
@@ -206,7 +433,10 @@ fun MapViewContainer(
 }
 
 private fun initMapLayers(style: Style, context: Context) {
-    // 0. Register WPT Dark Green Triangle Icon
+    // 0. Register WPT Standard Flag Icons and Legacy Triangle Icon
+    style.addImage(WPT_FLAG_RED_ICON_ID, createFlagBitmap(context, AndroidColor.parseColor("#E53935")))
+    style.addImage(WPT_FLAG_YELLOW_ICON_ID, createFlagBitmap(context, AndroidColor.parseColor("#FBC02D")))
+    style.addImage(WPT_FLAG_GREEN_ICON_ID, createFlagBitmap(context, AndroidColor.parseColor("#43A047")))
     style.addImage(WPT_TRIANGLE_ICON_ID, createWptTriangleBitmap(context))
 
     // 1. GPX Track Line Layer
@@ -257,17 +487,17 @@ private fun initMapLayers(style: Style, context: Context) {
         style.addLayer(markersLayer)
     }
 
-    // 4. Waypoints Layer (Rendered as Dark Green Triangle on the Route)
+    // 4. Waypoints Layer (Rendered as Colored Flag Icon matching symbol)
     if (style.getSource(WAYPOINTS_SOURCE_ID) == null) {
         style.addSource(GeoJsonSource(WAYPOINTS_SOURCE_ID))
     }
     if (style.getLayer(WAYPOINTS_LAYER_ID) == null) {
         val wptSymbolLayer = SymbolLayer(WAYPOINTS_LAYER_ID, WAYPOINTS_SOURCE_ID).apply {
             setProperties(
-                iconImage(WPT_TRIANGLE_ICON_ID),
+                iconImage(get("icon_image")),
                 iconAllowOverlap(true),
                 iconIgnorePlacement(true),
-                iconAnchor(Property.ICON_ANCHOR_CENTER),
+                iconAnchor(Property.ICON_ANCHOR_BOTTOM),
                 iconSize(1.0f)
             )
         }
@@ -293,6 +523,48 @@ private fun initMapLayers(style: Style, context: Context) {
         }
         style.addLayer(wptLabel)
     }
+
+    // 6. Intermediate Trackpoint Dots Layer (Conditionally toggled)
+    if (style.getSource(INTERMEDIATE_VERTICES_SOURCE_ID) == null) {
+        style.addSource(GeoJsonSource(INTERMEDIATE_VERTICES_SOURCE_ID))
+    }
+    if (style.getLayer(INTERMEDIATE_VERTICES_LAYER_ID) == null) {
+        val intermediateLayer = CircleLayer(INTERMEDIATE_VERTICES_LAYER_ID, INTERMEDIATE_VERTICES_SOURCE_ID).apply {
+            setProperties(
+                circleRadius(4.5f),
+                circleColor(AndroidColor.WHITE),
+                circleStrokeWidth(1.8f),
+                circleStrokeColor(AndroidColor.parseColor("#E53935"))
+            )
+        }
+        style.addLayer(intermediateLayer)
+    }
+
+    // 7. Drag & Drop Insertion / Move Preview
+    if (style.getSource(DRAG_PREVIEW_SOURCE_ID) == null) {
+        style.addSource(GeoJsonSource(DRAG_PREVIEW_SOURCE_ID))
+    }
+    if (style.getLayer(DRAG_PREVIEW_LINE_LAYER_ID) == null) {
+        val previewLine = LineLayer(DRAG_PREVIEW_LINE_LAYER_ID, DRAG_PREVIEW_SOURCE_ID).apply {
+            setProperties(
+                lineColor(AndroidColor.parseColor("#FF9800")),
+                lineWidth(3.5f),
+                lineDasharray(arrayOf(2f, 2f))
+            )
+        }
+        style.addLayer(previewLine)
+    }
+    if (style.getLayer(DRAG_PREVIEW_POINT_LAYER_ID) == null) {
+        val previewPoint = CircleLayer(DRAG_PREVIEW_POINT_LAYER_ID, DRAG_PREVIEW_SOURCE_ID).apply {
+            setProperties(
+                circleRadius(8f),
+                circleColor(AndroidColor.parseColor("#FF9800")),
+                circleStrokeWidth(2.5f),
+                circleStrokeColor(AndroidColor.WHITE)
+            )
+        }
+        style.addLayer(previewPoint)
+    }
 }
 
 private fun updateMapData(
@@ -301,19 +573,33 @@ private fun updateMapData(
     startPointerIndex: Int,
     middlePointerIndex: Int,
     endPointerIndex: Int,
+    showTrackpoints: Boolean = true,
+    dragInsertCoordinate: Pair<Double, Double>? = null,
+    dragInsertIndex: Int? = null,
+    movingPos: Pair<Double, Double>? = null,
+    movingIndex: Int? = null,
     context: Context
 ) {
     // Ensure layers and images are registered if style was just loaded or restored
-    if (style.getSource(WAYPOINTS_SOURCE_ID) == null || style.getImage(WPT_TRIANGLE_ICON_ID) == null) {
+    if (style.getSource(WAYPOINTS_SOURCE_ID) == null || style.getImage(WPT_FLAG_RED_ICON_ID) == null) {
         initMapLayers(style, context)
     }
 
     val trackPoints = gpxData.trackPoints
 
+    // Update Polyline incorporating real-time moving vertex position
+    val displayPoints = if (movingPos != null && movingIndex != null && movingIndex in trackPoints.indices) {
+        trackPoints.toMutableList().apply {
+            this[movingIndex] = this[movingIndex].copy(lat = movingPos.first, lon = movingPos.second)
+        }
+    } else {
+        trackPoints
+    }
+
     // 1. Update Track Polyline
     val trackSource = style.getSourceAs<GeoJsonSource>(TRACK_SOURCE_ID)
-    if (trackPoints.size >= 2) {
-        val coords = trackPoints.map { Point.fromLngLat(it.lon, it.lat) }
+    if (displayPoints.size >= 2) {
+        val coords = displayPoints.map { Point.fromLngLat(it.lon, it.lat) }
         val line = LineString.fromLngLats(coords)
         trackSource?.setGeoJson(Feature.fromGeometry(line))
     } else {
@@ -322,8 +608,8 @@ private fun updateMapData(
 
     // 2. Update Segment between Start and End
     val segmentSource = style.getSourceAs<GeoJsonSource>(SEGMENT_SOURCE_ID)
-    if (startPointerIndex < endPointerIndex && endPointerIndex < trackPoints.size) {
-        val segPoints = trackPoints.subList(startPointerIndex, endPointerIndex + 1)
+    if (startPointerIndex < endPointerIndex && endPointerIndex < displayPoints.size) {
+        val segPoints = displayPoints.subList(startPointerIndex, endPointerIndex + 1)
         if (segPoints.size >= 2) {
             val coords = segPoints.map { Point.fromLngLat(it.lon, it.lat) }
             segmentSource?.setGeoJson(Feature.fromGeometry(LineString.fromLngLats(coords)))
@@ -336,10 +622,10 @@ private fun updateMapData(
 
     // 3. Update 3 Pointer Markers: Start (Green), Middle/WPT (Blue), End (Red)
     val markerFeatures = mutableListOf<Feature>()
-    if (trackPoints.isNotEmpty()) {
+    if (displayPoints.isNotEmpty()) {
         // Start Pointer: Green (#4CAF50)
-        val clampedStart = startPointerIndex.coerceIn(0, trackPoints.size - 1)
-        val startPt = trackPoints[clampedStart]
+        val clampedStart = startPointerIndex.coerceIn(0, displayPoints.size - 1)
+        val startPt = displayPoints[clampedStart]
         val startFeat = Feature.fromGeometry(Point.fromLngLat(startPt.lon, startPt.lat)).apply {
             addStringProperty("type", "start")
             addStringProperty("color", "#4CAF50") // Green
@@ -347,8 +633,8 @@ private fun updateMapData(
         markerFeatures.add(startFeat)
 
         // Middle Pointer (WPT): Blue (#2196F3)
-        val clampedMiddle = middlePointerIndex.coerceIn(0, trackPoints.size - 1)
-        val middlePt = trackPoints[clampedMiddle]
+        val clampedMiddle = middlePointerIndex.coerceIn(0, displayPoints.size - 1)
+        val middlePt = displayPoints[clampedMiddle]
         val middleFeat = Feature.fromGeometry(Point.fromLngLat(middlePt.lon, middlePt.lat)).apply {
             addStringProperty("type", "middle_wpt")
             addStringProperty("color", "#2196F3") // Blue
@@ -356,8 +642,8 @@ private fun updateMapData(
         markerFeatures.add(middleFeat)
 
         // End Pointer: Red (#F44336)
-        val clampedEnd = endPointerIndex.coerceIn(0, trackPoints.size - 1)
-        val endPt = trackPoints[clampedEnd]
+        val clampedEnd = endPointerIndex.coerceIn(0, displayPoints.size - 1)
+        val endPt = displayPoints[clampedEnd]
         val endFeat = Feature.fromGeometry(Point.fromLngLat(endPt.lon, endPt.lat)).apply {
             addStringProperty("type", "end")
             addStringProperty("color", "#F44336") // Red
@@ -368,12 +654,51 @@ private fun updateMapData(
     val markersSource = style.getSourceAs<GeoJsonSource>(MARKERS_SOURCE_ID)
     markersSource?.setGeoJson(FeatureCollection.fromFeatures(markerFeatures))
 
-    // 4. Update Waypoints (Icon layer & Label layer)
+    // 4. Update Intermediate Trackpoint Dots conditionally
+    val intermediateSource = style.getSourceAs<GeoJsonSource>(INTERMEDIATE_VERTICES_SOURCE_ID)
+    val intermediateLayer = style.getLayer(INTERMEDIATE_VERTICES_LAYER_ID)
+    if (showTrackpoints && displayPoints.size > 2) {
+        intermediateLayer?.setProperties(visibility(Property.VISIBLE))
+        val intermediateFeatures = (1 until displayPoints.size - 1).map { idx ->
+            val pt = displayPoints[idx]
+            Feature.fromGeometry(Point.fromLngLat(pt.lon, pt.lat)).apply {
+                addNumberProperty("index", idx)
+            }
+        }
+        intermediateSource?.setGeoJson(FeatureCollection.fromFeatures(intermediateFeatures.toTypedArray()))
+    } else {
+        intermediateLayer?.setProperties(visibility(Property.NONE))
+        intermediateSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+    }
+
+    // 5. Update Drag Preview
+    val dragPreviewSource = style.getSourceAs<GeoJsonSource>(DRAG_PREVIEW_SOURCE_ID)
+    if (dragInsertCoordinate != null && dragInsertIndex != null && trackPoints.size >= 2) {
+        val dragFeatures = mutableListOf<Feature>()
+        val insertIdx = dragInsertIndex.coerceIn(1, trackPoints.size - 1)
+        val prevPt = trackPoints[insertIdx - 1]
+        val nextPt = trackPoints[insertIdx]
+
+        val previewCoords = listOf(
+            Point.fromLngLat(prevPt.lon, prevPt.lat),
+            Point.fromLngLat(dragInsertCoordinate.second, dragInsertCoordinate.first),
+            Point.fromLngLat(nextPt.lon, nextPt.lat)
+        )
+        dragFeatures.add(Feature.fromGeometry(LineString.fromLngLats(previewCoords)))
+        dragFeatures.add(Feature.fromGeometry(Point.fromLngLat(dragInsertCoordinate.second, dragInsertCoordinate.first)))
+        dragPreviewSource?.setGeoJson(FeatureCollection.fromFeatures(dragFeatures.toTypedArray()))
+    } else {
+        dragPreviewSource?.setGeoJson(FeatureCollection.fromFeatures(emptyArray()))
+    }
+
+    // 6. Update Waypoints (Icon layer & Label layer)
     val wptFeatures = gpxData.waypoints.map { wpt ->
         val feat = Feature.fromGeometry(Point.fromLngLat(wpt.lon, wpt.lat))
+        val normalizedSym = GpxWaypoint.normalizeSymbol(wpt.sym)
         feat.addStringProperty("title", wpt.name)
         feat.addStringProperty("desc", wpt.desc ?: "")
-        feat.addStringProperty("sym", wpt.sym ?: "")
+        feat.addStringProperty("sym", normalizedSym)
+        feat.addStringProperty("icon_image", normalizedSym)
         feat
     }
     val waypointsSource = style.getSourceAs<GeoJsonSource>(WAYPOINTS_SOURCE_ID)
@@ -447,6 +772,78 @@ private fun createWptTriangleBitmap(context: Context): Bitmap {
         strokeCap = Paint.Cap.ROUND
     }
     canvas.drawPath(path, strokePaint)
+
+    return bitmap
+}
+
+private fun createFlagBitmap(context: Context, flagColorInt: Int): Bitmap {
+    val density = context.resources.displayMetrics.density
+    val widthPx = (28 * density).toInt().coerceAtLeast(56)
+    val heightPx = (32 * density).toInt().coerceAtLeast(64)
+    val bitmap = Bitmap.createBitmap(widthPx, heightPx, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+
+    val strokeWidth = 2.5f * density
+    val poleX = widthPx / 2f
+    val poleTop = 4f * density
+    val poleBottom = heightPx - 3f * density
+
+    // 1. Flag cloth (waving to the right from the pole)
+    val flagHeight = 14f * density
+    val flagRight = widthPx - 3f * density
+    val flagPath = Path().apply {
+        moveTo(poleX, poleTop)
+        lineTo(flagRight, poleTop + flagHeight / 2f)
+        lineTo(poleX, poleTop + flagHeight)
+        close()
+    }
+
+    // Outer white stroke on flag for high contrast
+    val flagStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = AndroidColor.WHITE
+        this.strokeWidth = strokeWidth * 1.5f
+        strokeJoin = Paint.Join.ROUND
+        strokeCap = Paint.Cap.ROUND
+    }
+    canvas.drawPath(flagPath, flagStrokePaint)
+
+    // Flag fill
+    val flagFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = flagColorInt
+    }
+    canvas.drawPath(flagPath, flagFillPaint)
+
+    // 2. Draw pole with white border
+    val poleBorderPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = AndroidColor.WHITE
+        this.strokeWidth = strokeWidth * 1.6f
+        strokeCap = Paint.Cap.ROUND
+    }
+    canvas.drawLine(poleX, poleTop, poleX, poleBottom, poleBorderPaint)
+
+    val polePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = AndroidColor.parseColor("#37474F")
+        this.strokeWidth = strokeWidth
+        strokeCap = Paint.Cap.ROUND
+    }
+    canvas.drawLine(poleX, poleTop, poleX, poleBottom, polePaint)
+
+    // 3. Base pinpoint dot at the pole tip
+    val dotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.FILL
+        color = flagColorInt
+    }
+    val dotStroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = AndroidColor.WHITE
+        this.strokeWidth = 1.5f * density
+    }
+    canvas.drawCircle(poleX, poleBottom, 2.5f * density, dotStroke)
+    canvas.drawCircle(poleX, poleBottom, 2.5f * density, dotPaint)
 
     return bitmap
 }

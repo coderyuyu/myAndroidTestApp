@@ -7,6 +7,7 @@ import com.gpxedt.app.model.RoutingProfile
 import com.gpxedt.app.model.TrackPoint
 import com.gpxedt.app.model.Waypoint
 import com.gpxedt.app.network.OsrmRoutingApi
+import java.time.Instant
 
 data class GpxEditorUiState(
     val fileName: String? = null,
@@ -25,8 +26,12 @@ data class GpxEditorUiState(
     val pendingWaypointLocation: Pair<Double, Double>? = null,
     val pendingPhotoWaypoint: Waypoint? = null,
     val photoRouteDistanceMeters: Double? = null,
+    val pendingWaypointTime: Instant? = null,
+    val isPendingWaypointTimeFromTrack: Boolean = false,
+    val pendingWaypointEle: Double? = null,
     val outOfRouteInfo: com.gpxedt.app.ui.components.OutOfRouteInfo? = null,
     val isWaypointListDialogOpen: Boolean = false,
+    val waypointSortOrder: com.gpxedt.app.model.WaypointSortOrder = com.gpxedt.app.model.WaypointSortOrder.MANUAL,
     val editingWaypoint: Waypoint? = null,
     val isServerSettingsDialogOpen: Boolean = false,
     val isSaveConfirmDialogOpen: Boolean = false,
@@ -37,8 +42,19 @@ data class GpxEditorUiState(
     val canRedo: Boolean = false,
     val mapBoundsTrigger: Int = 0,
     val focusLocation: Pair<Double, Double>? = null,
-    val cameraCenterLocation: Pair<Double, Double>? = null
+    val cameraCenterLocation: Pair<Double, Double>? = null,
+    val showTrackpoints: Boolean = true,
+    val selectedVertexIndex: Int? = null,
+    val isPointActionSheetOpen: Boolean = false,
+    val isMoveVertexMode: Boolean = false,
+    val movingVertexIndex: Int? = null,
+    val movingVertexPosition: Pair<Double, Double>? = null,
+    val isDragInsertingVertex: Boolean = false,
+    val dragInsertCoordinate: Pair<Double, Double>? = null,
+    val dragInsertProjectedIndex: Int? = null
 ) {
+    val selectedVertex: TrackPoint?
+        get() = selectedVertexIndex?.let { if (it in gpxData.trackPoints.indices) gpxData.trackPoints[it] else null }
     val startPoint: TrackPoint?
         get() = if (startPointerIndex in gpxData.trackPoints.indices) gpxData.trackPoints[startPointerIndex] else null
 

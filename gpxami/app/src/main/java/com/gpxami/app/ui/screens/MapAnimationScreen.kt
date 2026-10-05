@@ -39,8 +39,11 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gpxami.app.data.model.AdminDivisionConfig
 import com.gpxami.app.data.model.GpxTrack
+import com.gpxami.app.data.model.GpxWaypoint
 import com.gpxami.app.data.model.InterpolatedPoint
+import com.gpxami.app.data.model.WptVisibilityMode
 import com.gpxami.app.export.VideoEncoder
 import com.gpxami.app.map.MapRenderer
 import com.gpxami.app.map.MapStyle
@@ -91,7 +94,8 @@ class OpenGpxDocumentContract(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MapAnimationScreen(
-    viewModel: MapAnimationViewModel
+    viewModel: MapAnimationViewModel,
+    modifier: Modifier = Modifier
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -107,6 +111,7 @@ fun MapAnimationScreen(
     var showEditTitleDialog by remember { mutableStateOf(false) }
 
     Scaffold(
+        modifier = modifier,
         topBar = {
             TopAppBar(
                 title = {
@@ -242,7 +247,14 @@ fun MapAnimationScreen(
                     Canvas(modifier = Modifier.fillMaxSize()) {
                         if (tileEpoch >= 0L) {
                             drawIntoCanvas { canvas ->
-                                val optZoom = mapRenderer.calculateOptimalZoom(currentTrack, size.width, size.height) + 0.8 + uiState.zoomOffset + uiState.cameraZoomTransitionOffset
+                                val optOverviewZoom = mapRenderer.calculateOptimalOverviewZoom(
+                                    track = currentTrack,
+                                    viewportWidth = size.width,
+                                    viewportHeight = size.height,
+                                    rotationDegrees = uiState.mapRotation,
+                                    showElevationProfile = uiState.showElevationProfile
+                                )
+                                val optZoom = optOverviewZoom + 1.0 + uiState.zoomOffset + uiState.cameraZoomTransitionOffset
                                 mapRenderer.renderMap(
                                     canvas = canvas.nativeCanvas,
                                     width = size.width,
@@ -264,7 +276,12 @@ fun MapAnimationScreen(
                                     markerColor = uiState.markerColor,
                                     trackWidth = uiState.trackWidth * density,
                                     trackColor = uiState.trackColor,
-                                    blackBorderWidth = MapRenderer.BLACK_BORDER_WIDTH * density
+                                    blackBorderWidth = MapRenderer.BLACK_BORDER_WIDTH * density,
+                                    wptVisibilityMode = uiState.wptVisibilityMode,
+                                    wptAlphaMap = uiState.wptAlphaMap,
+                                    startWpt = uiState.startWpt,
+                                    endWpt = uiState.endWpt,
+                                    adminDivisionConfig = uiState.adminDivisionConfig
                                 )
                             }
                         }
@@ -289,7 +306,7 @@ fun MapAnimationScreen(
                         }
                     }
 
-                    // LAYER C: Top-Left Route Title & GPS Badge [需求: Title 可選字型大小]
+                    // LAYER C: Top-Left Route Title & Subtitle Badge [需求: Title 可選字型大小, 於標題下方顯示一級行政區名稱]
                     Row(
                         modifier = Modifier
                             .align(Alignment.TopStart)
@@ -308,25 +325,40 @@ fun MapAnimationScreen(
                             modifier = Modifier.size((uiState.titleTextSize * 0.55f).coerceIn(16f, 32f).dp)
                         )
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text(
-                            text = uiState.videoTitle,
-                            color = TextPrimary,
-                            fontSize = uiState.titleTextSize.sp,
-                            fontWeight = FontWeight.Bold,
-                            maxLines = 1,
-                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                        )
-                        Spacer(modifier = Modifier.width(10.dp))
-                        Text(
-                            text = String.format(
-                                Locale.US,
-                                "%.4f, %.4f",
-                                currentInterpolated.lat,
-                                currentInterpolated.lon
-                            ),
-                            color = TextMuted,
-                            fontSize = (uiState.titleTextSize * 0.32f).coerceIn(10f, 15f).sp
-                        )
+                        Column {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    text = uiState.videoTitle,
+                                    color = TextPrimary,
+                                    fontSize = uiState.titleTextSize.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Text(
+                                    text = String.format(
+                                        Locale.US,
+                                        "%.4f, %.4f",
+                                        currentInterpolated.lat,
+                                        currentInterpolated.lon
+                                    ),
+                                    color = TextMuted,
+                                    fontSize = (uiState.titleTextSize * 0.32f).coerceIn(10f, 15f).sp
+                                )
+                            }
+                            if (uiState.showAdminDivisionSubtitle && uiState.currentAdminDivision.isNotBlank()) {
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = uiState.currentAdminDivision,
+                                    color = CyanNeon,
+                                    fontSize = (uiState.titleTextSize * 0.8f).sp, // 80% of main Title's font size
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 1,
+                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                )
+                            }
+                        }
                     }
 
                     // LAYER D: Interactive North Compass Rose Badge (Top-Right)
@@ -503,11 +535,15 @@ fun MapAnimationScreen(
             VisualCustomizationCard(
                 uiState = uiState,
                 onSetWptTextSize = { viewModel.setWptLabelTextSize(it) },
+                onSetWptPauseDuration = { viewModel.setWptPauseDuration(it) },
+                onSetWptVisibilityMode = { viewModel.setWptVisibilityMode(it) },
+                onSetShowAdminDivisionSubtitle = { viewModel.setShowAdminDivisionSubtitle(it) },
                 onSetMarkerRadius = { viewModel.setMarkerRadius(it) },
                 onSetMarkerColor = { viewModel.setMarkerColor(it) },
                 onSetTrackWidth = { viewModel.setTrackWidth(it) },
                 onSetTrackColor = { viewModel.setTrackColor(it) },
-                onSetTitleTextSize = { viewModel.setTitleTextSize(it) }
+                onSetTitleTextSize = { viewModel.setTitleTextSize(it) },
+                onSetAdminDivisionConfig = { viewModel.setAdminDivisionConfig(it) }
             )
 
             // =========================================================================
@@ -527,10 +563,12 @@ fun MapAnimationScreen(
             if (uiState.fullTrack != null) {
                 TimeRangeSelectorCard(
                     uiState = uiState,
-                    onRangeChange = { range, focusEnd, focusStart ->
-                        viewModel.setTimeRange(range, focusEnd = focusEnd, focusStart = focusStart)
+                    onRangeChange = { range, isStart, isEnd ->
+                        viewModel.setTimeRange(range, focusStart = isStart, focusEnd = isEnd)
                     },
-                    onResetRange = { viewModel.resetTimeRange() }
+                    onResetRange = { viewModel.resetTimeRange() },
+                    onSetStartFromWaypoint = { viewModel.setStartFromWaypoint(it) },
+                    onSetEndFromWaypoint = { viewModel.setEndFromWaypoint(it) }
                 )
             }
 
@@ -583,6 +621,7 @@ fun MapAnimationScreen(
             onDismiss = { showExportSettingsDialog = false },
             onConfirmExport = { config ->
                 showExportSettingsDialog = false
+                viewModel.setVideoTitle(config.videoTitle)
                 viewModel.exportVideo(config)
             }
         )
@@ -657,6 +696,24 @@ fun MapAnimationScreen(
                                 )
                             )
                         }
+                    }
+
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Checkbox(
+                            checked = uiState.showAdminDivisionSubtitle,
+                            onCheckedChange = { viewModel.setShowAdminDivisionSubtitle(it) },
+                            colors = CheckboxDefaults.colors(checkedColor = CyanNeon, checkmarkColor = Color.Black)
+                        )
+                        Text(
+                            text = "於標題下方顯示一級行政區名稱",
+                            color = TextPrimary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
                     }
                 }
             },
@@ -942,12 +999,16 @@ private fun StatItem(label: String, value: String, tint: Color) {
 /**
  * Export Settings Modal for customizing resolution and duration.
  */
+/**
+ * Export Settings Modal for customizing resolution, duration, and title.
+ */
 @Composable
 private fun ExportSettingsDialog(
     uiState: MapUiState,
     onDismiss: () -> Unit,
     onConfirmExport: (VideoEncoder.ExportConfig) -> Unit
 ) {
+    var titleInput by remember(uiState.videoTitle) { mutableStateOf(uiState.videoTitle) }
     var selectedResolution by remember { mutableStateOf("1080p") }
     var selectedFps by remember { mutableStateOf(30) }
     var selectedDuration by remember { mutableStateOf(15) }
@@ -963,6 +1024,21 @@ private fun ExportSettingsDialog(
         },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                // [匯出影片時顯示 1: 可編輯標題]
+                Text(text = "影片標題 (左上角):", color = TextSecondary, fontSize = 12.sp)
+                OutlinedTextField(
+                    value = titleInput,
+                    onValueChange = { titleInput = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = CyanNeon,
+                        unfocusedBorderColor = GlassBorder,
+                        focusedTextColor = TextPrimary,
+                        unfocusedTextColor = TextPrimary
+                    )
+                )
+
                 // Resolution Selector
                 Text(text = "影片解析度 (16:9):", color = TextSecondary, fontSize = 12.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -989,10 +1065,10 @@ private fun ExportSettingsDialog(
                     }
                 }
 
-                // Duration
+                // [匯出影片時顯示 2: 影片長度選項 15秒, 25秒, 40秒]
                 Text(text = "影片長度 (秒):", color = TextSecondary, fontSize = 12.sp)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(10, 15, 30).forEach { sec ->
+                    listOf(15, 25, 40).forEach { sec ->
                         FilterChip(
                             selected = selectedDuration == sec,
                             onClick = { selectedDuration = sec },
@@ -1027,14 +1103,30 @@ private fun ExportSettingsDialog(
                         )
                     }
                     Text(
-                        text = "• 影片標題 (左上角): ${uiState.videoTitle} (字體 ${uiState.titleTextSize.toInt()}sp)",
+                        text = "• 影片標題 (左上角): ${titleInput.trim().ifEmpty { uiState.videoTitle }} (字體 ${uiState.titleTextSize.toInt()}sp)",
                         color = TextPrimary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold
                     )
+                    val wptPauseStr = if (uiState.wptPauseDurationSec <= 0.05f) "不停留 (連續移動)" else "每個WPT停留 ${uiState.wptPauseDurationSec.toInt()}秒"
+                    Text(
+                        text = "• 影片時長: ${selectedDuration}秒 (漸近開始 2秒, 漸近結束 2秒, $wptPauseStr)",
+                        color = CyanNeon,
+                        fontSize = 11.sp
+                    )
+                    Text(
+                        text = "• 航點停留與顯示: 停留 ${uiState.wptPauseDurationSec.toInt()}秒 / ${uiState.wptVisibilityMode.displayName}",
+                        color = CyanNeon,
+                        fontSize = 11.sp
+                    )
                     Text(
                         text = "• 樣式設定: WPT字體 ${uiState.wptLabelTextSize.toInt()}sp, 圓點 ${uiState.markerRadius.toInt()}dp, 路徑 ${uiState.trackWidth.toInt()}dp",
                         color = CyanNeon,
+                        fontSize = 11.sp
+                    )
+                    Text(
+                        text = if (uiState.showAdminDivisionSubtitle) "✓ 包含標題下方一級行政區名稱副標題 (80%字體)" else "• 未顯示行政區副標題",
+                        color = if (uiState.showAdminDivisionSubtitle) EmeraldAccent else TextMuted,
                         fontSize = 11.sp
                     )
                     Text(
@@ -1054,6 +1146,7 @@ private fun ExportSettingsDialog(
             Button(
                 onClick = {
                     val is1080 = selectedResolution == "1080p"
+                    val effectiveTitle = titleInput.trim().ifEmpty { uiState.videoTitle }
                     val config = VideoEncoder.ExportConfig(
                         width = if (is1080) 1920 else 1280,
                         height = if (is1080) 1080 else 720,
@@ -1067,7 +1160,7 @@ private fun ExportSettingsDialog(
                         mapStyle = uiState.mapStyle,
                         panOffsetX = uiState.panOffsetX,
                         panOffsetY = uiState.panOffsetY,
-                        videoTitle = uiState.videoTitle,
+                        videoTitle = effectiveTitle,
                         titleTextSize = uiState.titleTextSize,
                         wptLabelTextSize = uiState.wptLabelTextSize,
                         markerRadius = uiState.markerRadius,
@@ -1076,7 +1169,10 @@ private fun ExportSettingsDialog(
                         trackColor = uiState.trackColor,
                         uiViewportWidth = uiState.uiViewportWidth,
                         uiViewportHeight = uiState.uiViewportHeight,
-                        uiDensity = uiState.uiDensity
+                        uiDensity = uiState.uiDensity,
+                        wptPauseDurationSec = uiState.wptPauseDurationSec,
+                        wptVisibilityMode = uiState.wptVisibilityMode,
+                        showAdminDivisionSubtitle = uiState.showAdminDivisionSubtitle
                     )
                     onConfirmExport(config)
                 },
@@ -1097,11 +1193,14 @@ private fun ExportSettingsDialog(
 /**
  * Interactive two-point RangeSlider card for trimming GPX route to a custom time/distance range.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun TimeRangeSelectorCard(
     uiState: MapUiState,
     onRangeChange: (ClosedFloatingPointRange<Float>, Boolean, Boolean) -> Unit,
-    onResetRange: () -> Unit
+    onResetRange: () -> Unit,
+    onSetStartFromWaypoint: (GpxWaypoint) -> Unit,
+    onSetEndFromWaypoint: (GpxWaypoint) -> Unit
 ) {
     val fullTrack = uiState.fullTrack ?: return
     val activeTrack = uiState.track ?: return
@@ -1189,23 +1288,185 @@ private fun TimeRangeSelectorCard(
 
             Spacer(modifier = Modifier.height(2.dp))
 
-            // Two-point RangeSlider (Material 3)
+            // Two-point RangeSlider (Material 3) with distinct Start (Green) & End (Red) Thumbs
             RangeSlider(
                 value = uiState.selectedRange,
                 onValueChange = { newRange ->
                     val oldRange = uiState.selectedRange
-                    val rightMoved = abs(newRange.endInclusive - oldRange.endInclusive) > 0.0002f
-                    val leftMoved = abs(newRange.start - oldRange.start) > 0.0002f
-                    onRangeChange(newRange, rightMoved, leftMoved)
+                    val leftDiff = abs(newRange.start - oldRange.start)
+                    val rightDiff = abs(newRange.endInclusive - oldRange.endInclusive)
+                    val isStartAdjusted = leftDiff >= rightDiff && leftDiff > 0.00001f
+                    val isEndAdjusted = rightDiff > leftDiff && rightDiff > 0.00001f
+                    // Ensure left thumb cannot cross or equal right thumb (minimum 0.002f gap)
+                    val clampedStart = newRange.start.coerceIn(0f, 0.998f)
+                    val clampedEnd = newRange.endInclusive.coerceIn(clampedStart + 0.002f, 1f)
+                    onRangeChange(clampedStart..clampedEnd, isStartAdjusted, isEndAdjusted)
                 },
                 valueRange = 0f..1f,
+                startThumb = {
+                    // Emerald Green thumb with crisp white ring for Start Point (起點)
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(EmeraldAccent)
+                            .border(2.5.dp, Color.White, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(Color.White)
+                        )
+                    }
+                },
+                endThumb = {
+                    // Rose Red thumb with crisp white ring for Destination End Point (迄點)
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clip(CircleShape)
+                            .background(RoseAccent)
+                            .border(2.5.dp, Color.White, CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(Color.White)
+                        )
+                    }
+                },
                 colors = SliderDefaults.colors(
-                    thumbColor = CyanNeon,
                     activeTrackColor = CyanPrimary,
                     inactiveTrackColor = DividerColor
                 ),
                 modifier = Modifier.fillMaxWidth()
             )
+
+            // [操作問題 1: 可以用 WPT 選擇起迄點，依距離起點由近到遠升冪排序]
+            if (fullTrack.waypoints.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(6.dp))
+                val sortedWaypoints = remember(fullTrack) {
+                    fullTrack.waypoints.map { wpt ->
+                        wpt to fullTrack.findClosestDistanceKm(wpt.lat, wpt.lon)
+                    }.sortedBy { it.second }
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    var showStartMenu by remember { mutableStateOf(false) }
+                    var showEndMenu by remember { mutableStateOf(false) }
+
+                    // 起點 WPT Dropdown
+                    Box(modifier = Modifier.weight(1f)) {
+                        OutlinedButton(
+                            onClick = { showStartMenu = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            border = BorderStroke(1.dp, GlassBorder),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = EmeraldAccent)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Place,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = EmeraldAccent
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "起點 WPT ▼",
+                                fontSize = 11.sp,
+                                maxLines = 1
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showStartMenu,
+                            onDismissRequest = { showStartMenu = false },
+                            modifier = Modifier.background(SurfaceDark)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("原路徑起點 (0.0 km)", color = TextPrimary, fontSize = 12.sp) },
+                                onClick = {
+                                    showStartMenu = false
+                                    onRangeChange(0.0f..uiState.selectedRange.endInclusive, true, false)
+                                }
+                            )
+                            sortedWaypoints.forEach { (wpt, distKm) ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(wpt.name ?: "未命名航點", color = EmeraldAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                            Text(String.format(Locale.US, "%.1f km · %.0f m", distKm, wpt.elevation ?: 0.0), color = TextMuted, fontSize = 10.sp)
+                                        }
+                                    },
+                                    onClick = {
+                                        showStartMenu = false
+                                        onSetStartFromWaypoint(wpt)
+                                    }
+                                )
+                            }
+                        }
+                    }
+
+                    // 迄點 WPT Dropdown
+                    Box(modifier = Modifier.weight(1f)) {
+                        OutlinedButton(
+                            onClick = { showEndMenu = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            border = BorderStroke(1.dp, GlassBorder),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = RoseAccent)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Flag,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = RoseAccent
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text(
+                                text = "迄點 WPT ▼",
+                                fontSize = 11.sp,
+                                maxLines = 1
+                            )
+                        }
+
+                        DropdownMenu(
+                            expanded = showEndMenu,
+                            onDismissRequest = { showEndMenu = false },
+                            modifier = Modifier.background(SurfaceDark)
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("原路徑終點 (${String.format(Locale.US, "%.1f km", fullTrack.totalDistanceKm)})", color = TextPrimary, fontSize = 12.sp) },
+                                onClick = {
+                                    showEndMenu = false
+                                    onRangeChange(uiState.selectedRange.start..1.0f, false, true)
+                                }
+                            )
+                            sortedWaypoints.forEach { (wpt, distKm) ->
+                                DropdownMenuItem(
+                                    text = {
+                                        Column {
+                                            Text(wpt.name ?: "未命名航點", color = RoseAccent, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                            Text(String.format(Locale.US, "%.1f km · %.0f m", distKm, wpt.elevation ?: 0.0), color = TextMuted, fontSize = 10.sp)
+                                        }
+                                    },
+                                    onClick = {
+                                        showEndMenu = false
+                                        onSetEndFromWaypoint(wpt)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -1323,11 +1584,15 @@ private fun ExportSuccessDialog(
 private fun VisualCustomizationCard(
     uiState: MapUiState,
     onSetWptTextSize: (Float) -> Unit,
+    onSetWptPauseDuration: (Float) -> Unit,
+    onSetWptVisibilityMode: (WptVisibilityMode) -> Unit,
+    onSetShowAdminDivisionSubtitle: (Boolean) -> Unit,
     onSetMarkerRadius: (Float) -> Unit,
     onSetMarkerColor: (Int) -> Unit,
     onSetTrackWidth: (Float) -> Unit,
     onSetTrackColor: (Int) -> Unit,
-    onSetTitleTextSize: (Float) -> Unit
+    onSetTitleTextSize: (Float) -> Unit,
+    onSetAdminDivisionConfig: (AdminDivisionConfig) -> Unit
 ) {
     var isExpanded by remember { mutableStateOf(false) }
 
@@ -1379,7 +1644,7 @@ private fun VisualCustomizationCard(
                         modifier = Modifier.size(18.dp)
                     )
                     Text(
-                        text = "樣式選項 (WPT字體 / 前進圓點 / 路徑)",
+                        text = "樣式與動畫選項 (WPT停留/顯示、行政區、樣式)",
                         color = TextPrimary,
                         fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
@@ -1411,10 +1676,210 @@ private fun VisualCustomizationCard(
                         .padding(top = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // 1. [需求 1] WPT label 字型大小選項
+                    // 1. WPT 停留秒數 (0–3 秒)
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "1. WPT 航點停留時間:",
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Text(
+                                text = if (uiState.wptPauseDurationSec <= 0.05f) "不停留 (0秒)" else "${uiState.wptPauseDurationSec.toInt()} 秒",
+                                color = CyanNeon,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.horizontalScroll(rememberScrollState())
+                        ) {
+                            listOf(
+                                Pair("0秒 (不停留)", 0f),
+                                Pair("1秒", 1f),
+                                Pair("2秒 (預設)", 2f),
+                                Pair("3秒", 3f)
+                            ).forEach { (label, sec) ->
+                                val isSelected = kotlin.math.abs(uiState.wptPauseDurationSec - sec) < 0.1f
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { onSetWptPauseDuration(sec) },
+                                    label = { Text(label, fontSize = 11.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = CyanDark,
+                                        selectedLabelColor = CyanNeon
+                                    )
+                                )
+                            }
+                        }
+
+                        Slider(
+                            value = uiState.wptPauseDurationSec,
+                            onValueChange = { onSetWptPauseDuration(it.roundToInt().toFloat()) },
+                            valueRange = 0f..3f,
+                            steps = 2,
+                            colors = SliderDefaults.colors(
+                                thumbColor = CyanNeon,
+                                activeTrackColor = CyanPrimary,
+                                inactiveTrackColor = DividerColor
+                            ),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Text(
+                            text = if (uiState.wptPauseDurationSec <= 0.05f)
+                                "• 0秒：不於航點停留，沿路徑持續連續移動 (預覽與匯出皆生效)"
+                            else
+                                "• 於每個航點停留 ${uiState.wptPauseDurationSec.toInt()} 秒 (匯出時每個航點渲染 ${uiState.wptPauseDurationSec.toInt()} × FPS 幀)",
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    HorizontalDivider(color = GlassBorder)
+
+                    // 2. WPT 顯示模式 (Visibility Mode & 淡入淡出)
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            text = "1. WPT 航點字型大小:",
+                            text = "2. WPT 航點顯示模式 (淡入/淡出動畫):",
+                            color = TextSecondary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.horizontalScroll(rememberScrollState())
+                        ) {
+                            WptVisibilityMode.values().forEach { mode ->
+                                val isSelected = uiState.wptVisibilityMode == mode
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { onSetWptVisibilityMode(mode) },
+                                    label = { Text(mode.displayName, fontSize = 11.sp) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = CyanDark,
+                                        selectedLabelColor = CyanNeon
+                                    )
+                                )
+                            }
+                        }
+
+                        val modeHelpText = when (uiState.wptVisibilityMode) {
+                            WptVisibilityMode.ALWAYS_SHOW ->
+                                "• 永遠顯示：所有航點標記在整個動畫與匯出影片中始終保持 100% 可見度。"
+                            WptVisibilityMode.ONLY_DURING_PAUSE ->
+                                if (uiState.wptPauseDurationSec <= 0.05f)
+                                    "• 停留期間顯示 (停留為0秒)：平時隱藏航點，當前進圓點行經航點時自動觸發平滑淡入與淡出過渡效果。"
+                                else
+                                    "• 停留期間顯示：平時隱藏航點，到達航點時平滑淡入 (0→1)，停留期間完全顯示，離開前平滑淡出 (1→0)。"
+                        }
+                        Text(
+                            text = modeHelpText,
+                            color = TextMuted,
+                            fontSize = 11.sp
+                        )
+                    }
+
+                    HorizontalDivider(color = GlassBorder)
+
+                    // 3. 標題第二行：顯示行政區名稱 (一級行政區 vs 一級行政區 + 二級行政區)
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "3. 於標題第二行顯示行政區名稱",
+                                    color = TextPrimary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = "字體為標題的 80% (${(uiState.titleTextSize * 0.8f).toInt()}sp) · 依國際規則自動反向解析",
+                                    color = TextMuted,
+                                    fontSize = 11.sp
+                                )
+                            }
+                            Switch(
+                                checked = uiState.showAdminDivisionSubtitle,
+                                onCheckedChange = onSetShowAdminDivisionSubtitle,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = CyanNeon,
+                                    checkedTrackColor = CyanDark,
+                                    uncheckedThumbColor = TextMuted,
+                                    uncheckedTrackColor = SurfaceDark
+                                ),
+                                modifier = Modifier.height(26.dp)
+                            )
+                        }
+
+                        if (uiState.showAdminDivisionSubtitle) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "標題第二行行政區格式:",
+                                    color = TextSecondary,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                                Text(
+                                    text = uiState.adminDivisionConfig.displayName,
+                                    color = CyanNeon,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.horizontalScroll(rememberScrollState())
+                            ) {
+                                AdminDivisionConfig.values().forEach { config ->
+                                    val isSelected = uiState.adminDivisionConfig == config
+                                    FilterChip(
+                                        selected = isSelected,
+                                        onClick = { onSetAdminDivisionConfig(config) },
+                                        label = { Text(config.displayName, fontSize = 11.sp) },
+                                        colors = FilterChipDefaults.filterChipColors(
+                                            selectedContainerColor = CyanDark,
+                                            selectedLabelColor = CyanNeon
+                                        )
+                                    )
+                                }
+                            }
+
+                            val displayAdmin = if (uiState.currentAdminDivision.isNotEmpty())
+                                uiState.currentAdminDivision
+                            else
+                                "定位中 / 載入中..."
+                            Text(
+                                text = "• 目前標題第二行預覽: $displayAdmin",
+                                color = CyanNeon,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(color = GlassBorder)
+
+                    // 4. [需求 1] WPT label 字型大小選項
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "4. WPT 航點標籤字型大小:",
                             color = TextSecondary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold
@@ -1445,10 +1910,10 @@ private fun VisualCustomizationCard(
 
                     HorizontalDivider(color = GlassBorder)
 
-                    // 2. [需求 2] 前進圓點大小及顏色選項
+                    // 5. [需求 2] 前進圓點大小及顏色選項
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "2. 前進圓點大小及顏色:",
+                            text = "5. 前進圓點大小及顏色:",
                             color = TextSecondary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold
@@ -1515,10 +1980,10 @@ private fun VisualCustomizationCard(
 
                     HorizontalDivider(color = GlassBorder)
 
-                    // 3. [需求 3] 路徑的粗細及顏色選項
+                    // 6. [需求 3] 路徑的粗細及顏色選項
                     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = "3. 路徑粗細及顏色:",
+                            text = "6. 路徑粗細及顏色:",
                             color = TextSecondary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold
@@ -1585,10 +2050,10 @@ private fun VisualCustomizationCard(
 
                     HorizontalDivider(color = GlassBorder)
 
-                    // 4. [需求: Title 可選字型大小]
+                    // 7. [需求: Title 可選字型大小]
                     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                         Text(
-                            text = "4. 影片標題 (Title) 字型大小:",
+                            text = "7. 影片標題 (Title) 字型大小:",
                             color = TextSecondary,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold

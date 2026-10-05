@@ -18,15 +18,19 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddLocation
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Flag
 import androidx.compose.material.icons.filled.PinDrop
-import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Sort
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -45,13 +49,19 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.gpxedt.app.model.GpxWaypoint
 import com.gpxedt.app.model.Waypoint
-import com.gpxedt.app.ui.theme.WaypointMarkerColor
+import com.gpxedt.app.model.WaypointSortOrder
+import com.gpxedt.app.ui.waypoint.WaypointViewModel
 import java.util.Locale
+
+import androidx.compose.material.icons.automirrored.filled.Sort
 
 @Composable
 fun WaypointListDialog(
     waypoints: List<Waypoint>,
+    currentSortOrder: WaypointSortOrder = WaypointSortOrder.MANUAL,
+    onSortOrderChange: (WaypointSortOrder) -> Unit = {},
     onDismiss: () -> Unit,
     onLocate: (Waypoint) -> Unit,
     onEdit: (Waypoint) -> Unit,
@@ -59,12 +69,18 @@ fun WaypointListDialog(
     onAddNew: () -> Unit
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var isSortMenuExpanded by remember { mutableStateOf(false) }
+    var localSortOrder by remember(currentSortOrder) { mutableStateOf(currentSortOrder) }
 
-    val filteredWaypoints = remember(waypoints, searchQuery) {
+    val sortedList = remember(waypoints, localSortOrder) {
+        WaypointViewModel.sortWaypointList(waypoints, localSortOrder)
+    }
+
+    val filteredWaypoints = remember(sortedList, searchQuery) {
         if (searchQuery.isBlank()) {
-            waypoints
+            sortedList
         } else {
-            waypoints.filter {
+            sortedList.filter {
                 it.name.contains(searchQuery, ignoreCase = true) ||
                         (it.desc?.contains(searchQuery, ignoreCase = true) == true) ||
                         (it.sym?.contains(searchQuery, ignoreCase = true) == true)
@@ -82,11 +98,65 @@ fun WaypointListDialog(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = "Waypoints (${waypoints.size})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
+                Column {
+                    Text(
+                        text = "Waypoints (${waypoints.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = localSortOrder.displayName,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+
+                Box {
+                    IconButton(onClick = { isSortMenuExpanded = true }) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Sort,
+                            contentDescription = "Sort Waypoints",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = isSortMenuExpanded,
+                        onDismissRequest = { isSortMenuExpanded = false }
+                    ) {
+                        WaypointSortOrder.values().forEach { order ->
+                            val isSelected = order == localSortOrder
+                            DropdownMenuItem(
+                                text = {
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = order.displayName,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        )
+                                        if (isSelected) {
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Icon(
+                                                imageVector = Icons.Default.Check,
+                                                contentDescription = "Selected",
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                modifier = Modifier.size(16.dp)
+                                            )
+                                        }
+                                    }
+                                },
+                                onClick = {
+                                    isSortMenuExpanded = false
+                                    localSortOrder = order
+                                    onSortOrderChange(order)
+                                }
+                            )
+                        }
+                    }
+                }
             }
         },
         text = {
@@ -191,6 +261,9 @@ private fun WaypointCardItem(
     onEdit: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val flagColor = GpxWaypoint.getFlagColor(waypoint.sym)
+    val displaySym = GpxWaypoint.normalizeSymbol(waypoint.sym)
+
     Card(
         modifier = Modifier
             .fillMaxWidth()
@@ -206,22 +279,19 @@ private fun WaypointCardItem(
                 .padding(horizontal = 10.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // Marker badge (Dark Green Triangle)
+            // Flag Icon Badge matching waypoint symbol
             Surface(
-                color = WaypointMarkerColor.copy(alpha = 0.15f),
+                color = flagColor.copy(alpha = 0.15f),
                 shape = RoundedCornerShape(6.dp),
                 modifier = Modifier.size(36.dp)
             ) {
                 Box(contentAlignment = Alignment.Center) {
-                    androidx.compose.foundation.Canvas(modifier = Modifier.size(18.dp)) {
-                        val path = androidx.compose.ui.graphics.Path().apply {
-                            moveTo(size.width / 2f, 2f)
-                            lineTo(size.width - 2f, size.height - 2f)
-                            lineTo(2f, size.height - 2f)
-                            close()
-                        }
-                        drawPath(path, color = WaypointMarkerColor)
-                    }
+                    Icon(
+                        imageVector = Icons.Default.Flag,
+                        contentDescription = displaySym,
+                        tint = flagColor,
+                        modifier = Modifier.size(20.dp)
+                    )
                 }
             }
 
@@ -253,14 +323,13 @@ private fun WaypointCardItem(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                if (!waypoint.sym.isNullOrBlank()) {
-                    Text(
-                        text = "Sym: ${waypoint.sym}",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
+                Text(
+                    text = displaySym,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = flagColor
+                )
             }
 
             // Actions

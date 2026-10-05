@@ -14,8 +14,13 @@ import android.net.Uri
 import android.os.Build
 import android.provider.MediaStore
 import android.view.Surface
+import com.gpxami.app.data.geocoding.AdminDivisionResolver
+import com.gpxami.app.data.model.AdminDivisionConfig
 import com.gpxami.app.data.model.GpxTrack
 import com.gpxami.app.data.model.InterpolatedPoint
+import com.gpxami.app.data.model.Wpt
+import com.gpxami.app.data.model.WptVisibilityMode
+import com.gpxami.app.map.CameraViewportHelper
 import com.gpxami.app.map.MapRenderer
 import com.gpxami.app.map.MapStyle
 import kotlinx.coroutines.Dispatchers
@@ -26,6 +31,7 @@ import java.io.File
 import java.io.FileInputStream
 import java.util.Locale
 import kotlin.coroutines.coroutineContext
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -60,7 +66,13 @@ class VideoEncoder(
         val trackColor: Int = 0xFF00F2FE.toInt(),
         val uiViewportWidth: Float = 0f,
         val uiViewportHeight: Float = 0f,
-        val uiDensity: Float = 2.75f
+        val uiDensity: Float = 2.75f,
+        val wptPauseDurationSec: Float = 2.0f,
+        val wptVisibilityMode: WptVisibilityMode = WptVisibilityMode.ALWAYS_SHOW,
+        val showAdminDivisionSubtitle: Boolean = false,
+        val startWpt: Wpt? = null,
+        val endWpt: Wpt? = null,
+        val adminDivisionConfig: AdminDivisionConfig = AdminDivisionConfig.LEVEL_1_ONLY
     )
 
     private class EncodingSession {
@@ -73,7 +85,15 @@ class VideoEncoder(
         val zoom: Double,
         val focus: Pair<Double, Double>,
         val panX: Float,
-        val panY: Float
+        val panY: Float,
+        val wptAlphaMap: Map<Int, Float>? = null
+    )
+
+    private data class MidFrameState(
+        val progress: Float,
+        val pausedWptIndex: Int? = null,
+        val pauseFrameIdx: Int = 0,
+        val totalPauseFrames: Int = 0
     )
 
     /**
@@ -91,6 +111,7 @@ class VideoEncoder(
 
         val tempFile = File(context.cacheDir, "export_${System.currentTimeMillis()}.mp4")
         val mapRenderer = MapRenderer(context.cacheDir)
+        val adminDivisionResolver = AdminDivisionResolver(context)
 
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
@@ -108,21 +129,118 @@ class VideoEncoder(
             val effectiveUiH = if (config.uiViewportHeight > 0f) config.uiViewportHeight else config.height.toFloat()
             val scale = config.height.toFloat() / effectiveUiH
 
+            // [核心修正]: 透過共用函式判定有效起點是否位於當前可視範圍內
+            val initialCam = CameraViewportHelper.determineInitialCamera(
+                track = track,
+                viewportWidth = effectiveUiW,
+                viewportHeight = effectiveUiH,
+                currentZoomOffset = config.zoomOffset,
+                currentPanX = config.panOffsetX,
+                currentPanY = config.panOffsetY,
+                mapRotation = config.rotationDegrees,
+                showElevationProfile = config.showElevationProfile
+            )
+
+            val effectiveZoomOffset = if (initialCam.isStartInViewport) initialCam.zoomOffset else 0.0
+            val effectivePanX = if (initialCam.isStartInViewport) initialCam.panOffsetX * scale else 0f
+            val effectivePanY = if (initialCam.isStartInViewport) initialCam.panOffsetY * scale else 0f
+
             // Geographic map zoom & pan matching:
-            // uiBaseZoom is the close-up follow zoom; uiOverviewZoom is the optimal zoom to fit entire route
-            val uiOverviewZoom = mapRenderer.calculateOptimalZoom(track, effectiveUiW, effectiveUiH) + config.zoomOffset
-            val uiBaseZoom = uiOverviewZoom + 0.8
+            // uiOverviewZoom is the optimal zoom to fit entire route considering rotation and elevation overlay
+            val uiOverviewZoom = mapRenderer.calculateOptimalOverviewZoom(
+                track = track,
+                viewportWidth = effectiveUiW,
+                viewportHeight = effectiveUiH,
+                rotationDegrees = config.rotationDegrees,
+                showElevationProfile = config.showElevationProfile
+            )
+            // User operated zoom scale in UI preview container (or optimal 0.0 if start was off-screen)
+            val uiBaseZoom = uiOverviewZoom + 1.0 + effectiveZoomOffset
             val targetZoom = uiBaseZoom + ln(scale.toDouble()) / ln(2.0)
             val targetOverviewZoom = uiOverviewZoom + ln(scale.toDouble()) / ln(2.0)
 
-            val scaledPanX = config.panOffsetX * scale
-            val scaledPanY = config.panOffsetY * scale
+            // Timing allocation:
+            // 1. 2秒做為漸近開始 (Intro: 2.0s)
+            // 2. 2秒做為漸近結束 (Outro: 2.0s)
+            // 3. 每個 WPT 停留 N 秒鐘 (Each intermediate WPT: config.wptPauseDurationSec pause)
+            val introFrames = (2.0f * config.fps).toInt().coerceAtMost(totalFrames / 4)
+            val outroFrames = (2.0f * config.fps).toInt().coerceAtMost(totalFrames / 4)
+            val midFrames = (totalFrames - introFrames - outroFrames).coerceAtLeast(1)
 
-            // Timing allocation: 3.5s graceful zoom-out to overview if route duration is sufficient
-            val totalDurationSec = config.durationSeconds.toFloat()
-            val zoomOutDurationSec = if (totalDurationSec >= 8f) 3.5f else (totalDurationSec * 0.35f).coerceAtLeast(1.5f)
-            val travelDurationSec = totalDurationSec - zoomOutDurationSec
-            val travelFrames = (travelDurationSec * config.fps).toInt().coerceIn(1, totalFrames - 1)
+            // Identify intermediate waypoints along the route (between 2% and 98% distance)
+            val wptsOnTrack = track.waypoints
+                .map { track.findClosestProgress(it.lat, it.lon) }
+                .filter { it in 0.02f..0.98f }
+                .sorted()
+
+            val distinctWpts = mutableListOf<Float>()
+            for (wp in wptsOnTrack) {
+                if (distinctWpts.none { kotlin.math.abs(it - wp) < 0.015f }) {
+                    distinctWpts.add(wp)
+                }
+            }
+
+            val wptProgressList = track.waypoints.mapIndexed { i, wpt ->
+                Pair(i, track.findClosestProgress(wpt.lat, wpt.lon))
+            }
+
+            val wptCount = distinctWpts.size
+            val maxPauseFramesTotal = (midFrames * 0.70f).toInt()
+            val requestedPauseFrames = (config.wptPauseDurationSec * config.fps).toInt()
+            val pauseFramesPerWpt = if (wptCount > 0 && config.wptPauseDurationSec > 0f) {
+                min(requestedPauseFrames, maxPauseFramesTotal / wptCount)
+            } else 0
+            val totalPauseFrames = wptCount * pauseFramesPerWpt
+            val movingFrames = (midFrames - totalPauseFrames).coerceAtLeast(1)
+
+            val waypointsAnchors = mutableListOf<Float>()
+            waypointsAnchors.add(0.0f)
+            waypointsAnchors.addAll(distinctWpts)
+            waypointsAnchors.add(1.0f)
+
+            val segmentCount = waypointsAnchors.size - 1
+            val segmentFrames = IntArray(segmentCount)
+            var allocatedMovingFrames = 0
+            for (i in 0 until segmentCount) {
+                val span = (waypointsAnchors[i + 1] - waypointsAnchors[i]).coerceAtLeast(0.0001f)
+                val f = (movingFrames * span).toInt().coerceAtLeast(1)
+                segmentFrames[i] = f
+                allocatedMovingFrames += f
+            }
+            segmentFrames[segmentCount - 1] += (movingFrames - allocatedMovingFrames)
+
+            fun getMidFrameState(midIdx: Int): MidFrameState {
+                var remaining = midIdx
+                for (i in 0 until segmentCount) {
+                    val segF = segmentFrames[i]
+                    if (remaining < segF) {
+                        // Continuous uniform progress along the track points (strictly linear, no jumps)
+                        val pStart = waypointsAnchors[i]
+                        val pEnd = waypointsAnchors[i + 1]
+                        val segT = when {
+                            i == 0 && segmentCount == 1 -> remaining.toFloat() / max(1, segF - 1).toFloat()
+                            i == 0 -> remaining.toFloat() / max(1, segF).toFloat()
+                            i == segmentCount - 1 -> (remaining + 1).toFloat() / max(1, segF).toFloat()
+                            else -> (remaining + 1).toFloat() / (segF + 1).toFloat()
+                        }
+                        return MidFrameState(progress = (pStart + (pEnd - pStart) * segT).coerceIn(0f, 1f))
+                    }
+                    remaining -= segF
+
+                    if (i < wptCount && pauseFramesPerWpt > 0) {
+                        if (remaining < pauseFramesPerWpt) {
+                            return MidFrameState(
+                                progress = distinctWpts[i],
+                                pausedWptIndex = i,
+                                pauseFrameIdx = remaining,
+                                totalPauseFrames = pauseFramesPerWpt
+                            )
+                        }
+                        remaining -= pauseFramesPerWpt
+                    }
+                }
+                return MidFrameState(progress = 1.0f)
+            }
 
             // Element sizes (WPT, marker, track width, black border) scaled proportionally to match UI
             val scaledWptSize = config.wptLabelTextSize * config.uiDensity * scale
@@ -145,6 +263,11 @@ class VideoEncoder(
                 height = config.height.toFloat(),
                 mapStyle = config.mapStyle
             )
+
+            // Pre-fetch administrative divisions along the route so frame rendering is never blocked
+            if (config.showAdminDivisionSubtitle) {
+                adminDivisionResolver.preloadForTrack(track)
+            }
 
             // 2. Configure MediaCodec video encoder
             val mimeType = MediaFormat.MIMETYPE_VIDEO_AVC // H.264
@@ -169,7 +292,8 @@ class VideoEncoder(
             offscreenBitmap = Bitmap.createBitmap(config.width, config.height, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(offscreenBitmap)
 
-            // Destination coordinate and track bounds center coordinate for smooth camera zoom out
+            // Start coordinate, destination coordinate and track bounds center coordinate for smooth camera motion
+            val startPt = track.points.first()
             val endPt = track.points.last()
             val centerLat = track.bounds.centerLat
             val centerLon = track.bounds.centerLon
@@ -180,33 +304,70 @@ class VideoEncoder(
                     throw InterruptedException("Video export was cancelled by user")
                 }
 
-                // Phase 1: Travel animation (0.0 to 1.0) with ease-in (accelerate at start) and ease-out (decelerate at end)
-                // Phase 2: Route completed, 3-5s graceful ease-out zoom and pan to entire route overview
-                val (progress, frameZoom, frameFocus, framePanX, framePanY) = if (frameIndex < travelFrames) {
-                    val rawT = if (travelFrames > 1) frameIndex.toFloat() / (travelFrames - 1).toFloat() else 1.0f
-                    // Smooth easeInOutCubic: accelerate gradually at start, smoothly decelerate at end
-                    val p = if (rawT < 0.5f) {
-                        4f * rawT * rawT * rawT
-                    } else {
-                        1f - (-2f * rawT + 2f).let { it * it * it } / 2f
-                    }.coerceIn(0f, 1f)
+                // [影片產出需求]: 影片需以使用者操作地圖的最後比例開始 (若在可視範圍內) 或最適比例 (若不在範圍內)
+                // Phase 1: 2.0s 漸近開始 (起點依判定置中/視角開始)
+                // Phase 2: Route travel with pause at each WPT (鏡頭跟隨行進標記)
+                // Phase 3: 2.0s 漸近結束 (Outro with graceful zoom-out and pan to entire route overview - Fit Bounds)
+                val (progress, frameZoom, frameFocus, framePanX, framePanY, wptAlphaMap) = when {
+                    frameIndex < introFrames -> {
+                        // 2.0s 漸近開始: 起點固定在起點座標，維持設定視角
+                        FrameCameraState(0.0f, targetZoom, Pair(startPt.lat, startPt.lon), effectivePanX, effectivePanY, emptyMap())
+                    }
+                    frameIndex < totalFrames - outroFrames -> {
+                        // Travel + WPT pauses
+                        val midIndex = frameIndex - introFrames
+                        val state = getMidFrameState(midIndex)
+                        val p = state.progress
+                        val pt = track.interpolate(p)
+                        val focus = Pair(pt.lat, pt.lon)
 
-                    val pt = track.interpolate(p)
-                    val focus = Pair(pt.lat, pt.lon)
-                    FrameCameraState(p, targetZoom, focus, scaledPanX, scaledPanY)
-                } else {
-                    val zoomOutFrames = totalFrames - travelFrames
-                    val t = if (zoomOutFrames > 1) {
-                        (frameIndex - travelFrames + 1).toFloat() / zoomOutFrames.toFloat()
-                    } else 1.0f
-                    // Smooth cubic ease-in-out curve
-                    val ease = if (t < 0.5f) 4f * t * t * t else 1f - (-2f * t + 2f).let { it * it * it } / 2f
-                    val currentZoom = targetZoom + (targetOverviewZoom - targetZoom) * ease
-                    val curLat = endPt.lat + (centerLat - endPt.lat) * ease
-                    val curLon = endPt.lon + (centerLon - endPt.lon) * ease
-                    val curPanX = scaledPanX * (1f - ease)
-                    val curPanY = scaledPanY * (1f - ease)
-                    FrameCameraState(1.0f, currentZoom, Pair(curLat, curLon), curPanX, curPanY)
+                        val alphaMap = if (config.wptVisibilityMode == WptVisibilityMode.ONLY_DURING_PAUSE) {
+                            if (state.pausedWptIndex != null && state.totalPauseFrames > 0) {
+                                val pauseFrameIdx = state.pauseFrameIdx
+                                val pauseTotal = state.totalPauseFrames
+                                val fadeFrames = min((0.35f * config.fps).toInt(), pauseTotal / 2)
+                                val alpha = when {
+                                    fadeFrames <= 0 -> 1.0f
+                                    pauseFrameIdx < fadeFrames -> (pauseFrameIdx.toFloat() / fadeFrames.toFloat()).coerceIn(0f, 1f)
+                                    pauseFrameIdx >= pauseTotal - fadeFrames -> ((pauseTotal - 1 - pauseFrameIdx).toFloat() / fadeFrames.toFloat()).coerceIn(0f, 1f)
+                                    else -> 1.0f
+                                }
+                                val stopProg = distinctWpts[state.pausedWptIndex]
+                                val matchingIndices = wptProgressList.filter { abs(it.second - stopProg) < 0.015f }.map { it.first }
+                                matchingIndices.associateWith { alpha }
+                            } else if (config.wptPauseDurationSec == 0f) {
+                                // Edge Case (Pause Duration = 0s): smooth fade-in/fade-out as marker passes WPT
+                                val map = mutableMapOf<Int, Float>()
+                                for ((idx, wptP) in wptProgressList) {
+                                    val dist = abs(p - wptP)
+                                    val window = 0.012f
+                                    if (dist < window) {
+                                        val a = (1.0f - dist / window).coerceIn(0f, 1f)
+                                        if (a > 0.005f) map[idx] = a
+                                    }
+                                }
+                                map
+                            } else {
+                                emptyMap()
+                            }
+                        } else {
+                            null // ALWAYS_SHOW: renderMap handles null as 100% opacity
+                        }
+
+                        FrameCameraState(p, targetZoom, focus, effectivePanX, effectivePanY, alphaMap)
+                    }
+                    else -> {
+                        // 2.0s 漸近結束: graceful ease-out zoom and pan to entire route overview (Fit Bounds)
+                        val outroIdx = frameIndex - (totalFrames - outroFrames)
+                        val t = (outroIdx + 1).toFloat() / outroFrames.toFloat()
+                        val ease = if (t < 0.5f) 4f * t * t * t else 1f - (-2f * t + 2f).let { it * it * it } / 2f
+                        val currentZoom = targetZoom + (targetOverviewZoom - targetZoom) * ease
+                        val curLat = endPt.lat + (centerLat - endPt.lat) * ease
+                        val curLon = endPt.lon + (centerLon - endPt.lon) * ease
+                        val curPanX = effectivePanX * (1f - ease)
+                        val curPanY = effectivePanY * (1f - ease)
+                        FrameCameraState(1.0f, currentZoom, Pair(curLat, curLon), curPanX, curPanY, emptyMap())
+                    }
                 }
 
                 val interpolated = track.interpolate(progress)
@@ -233,16 +394,26 @@ class VideoEncoder(
                     markerColor = config.markerColor,
                     trackWidth = scaledTrackWidth,
                     trackColor = config.trackColor,
-                    blackBorderWidth = scaledBlackBorder
+                    blackBorderWidth = scaledBlackBorder,
+                    wptVisibilityMode = config.wptVisibilityMode,
+                    wptAlphaMap = wptAlphaMap,
+                    startWpt = config.startWpt,
+                    endWpt = config.endWpt,
+                    adminDivisionConfig = config.adminDivisionConfig
                 )
 
-                // Render Top-Left Title Overlay in Video Frame matching UI scale (Requirement 4)
+                // Render Top-Left Title & Administrative Division Subtitle Overlay
                 if (config.videoTitle.isNotBlank()) {
+                    val subtitle = if (config.showAdminDivisionSubtitle) {
+                        adminDivisionResolver.resolveSync(interpolated.lat, interpolated.lon, config.adminDivisionConfig)
+                    } else null
+
                     renderVideoTitle(
                         canvas = canvas,
                         width = config.width.toFloat(),
                         height = config.height.toFloat(),
                         title = config.videoTitle,
+                        subtitle = subtitle,
                         titleTextSize = config.titleTextSize,
                         density = config.uiDensity,
                         scale = scale
@@ -687,43 +858,67 @@ class VideoEncoder(
 
     /**
      * Renders a high-contrast title badge strictly in the top-left corner of the exported video frame.
-     * Matches the UI title badge visual ratio 1-to-1.
+     * Matches the UI title badge visual ratio 1-to-1, including administrative division subtitle (80% font size).
      */
     private fun renderVideoTitle(
         canvas: Canvas,
         width: Float,
         height: Float,
         title: String,
+        subtitle: String? = null,
         titleTextSize: Float,
         density: Float,
         scale: Float
     ) {
         val titleText = title.trim()
-        val targetTextSizePx = titleTextSize * density * scale
+        val subtitleText = subtitle?.trim()?.takeIf { it.isNotEmpty() }
+
+        val targetTitleSizePx = titleTextSize * density * scale
+        val targetSubtitleSizePx = targetTitleSizePx * 0.8f // Strict 80% of main Title font size
+
         val margin = 8f * density * scale
         val padH = 10f * density * scale
         val padV = 6f * density * scale
+        val gap = 4f * density * scale
 
-        val textPaint = Paint().apply {
+        val titlePaint = Paint().apply {
             color = Color.WHITE
-            textSize = targetTextSizePx
+            textSize = targetTitleSizePx
             typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
             isAntiAlias = true
         }
 
-        val textBounds = Rect()
-        textPaint.getTextBounds(titleText, 0, titleText.length, textBounds)
-
-        // Ensure title fits within screen width comfortably
-        val maxAvailableWidth = width - margin * 2.5f - padH * 2
-        if (textBounds.width() > maxAvailableWidth && textBounds.width() > 0) {
-            val scaleFactor = maxAvailableWidth / textBounds.width()
-            textPaint.textSize = targetTextSizePx * scaleFactor
-            textPaint.getTextBounds(titleText, 0, titleText.length, textBounds)
+        val subtitlePaint = Paint().apply {
+            color = Color.rgb(6, 182, 212) // Neon Cyan #06B6D4 matching preview badge
+            textSize = targetSubtitleSizePx
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            isAntiAlias = true
         }
 
-        val badgeW = textBounds.width() + padH * 2
-        val badgeH = textBounds.height() + padV * 2
+        val titleBounds = Rect()
+        titlePaint.getTextBounds(titleText, 0, titleText.length, titleBounds)
+
+        val subtitleBounds = Rect()
+        if (subtitleText != null) {
+            subtitlePaint.getTextBounds(subtitleText, 0, subtitleText.length, subtitleBounds)
+        }
+
+        // Ensure title and subtitle fit within screen width comfortably
+        val maxAvailableWidth = width - margin * 2.5f - padH * 2
+        if (titleBounds.width() > maxAvailableWidth && titleBounds.width() > 0) {
+            val scaleFactor = maxAvailableWidth / titleBounds.width()
+            titlePaint.textSize = targetTitleSizePx * scaleFactor
+            titlePaint.getTextBounds(titleText, 0, titleText.length, titleBounds)
+        }
+        if (subtitleText != null && subtitleBounds.width() > maxAvailableWidth && subtitleBounds.width() > 0) {
+            val scaleFactor = maxAvailableWidth / subtitleBounds.width()
+            subtitlePaint.textSize = targetSubtitleSizePx * scaleFactor
+            subtitlePaint.getTextBounds(subtitleText, 0, subtitleText.length, subtitleBounds)
+        }
+
+        val maxTextWidth = max(titleBounds.width(), if (subtitleText != null) subtitleBounds.width() else 0)
+        val badgeW = maxTextWidth + padH * 2
+        val badgeH = titleBounds.height() + (if (subtitleText != null) subtitleBounds.height() + gap else 0f) + padV * 2
 
         val badgeRect = RectF(margin, margin, margin + badgeW, margin + badgeH)
 
@@ -743,8 +938,13 @@ class VideoEncoder(
         canvas.drawRoundRect(badgeRect, cornerRadius, cornerRadius, bgPaint)
         canvas.drawRoundRect(badgeRect, cornerRadius, cornerRadius, borderPaint)
 
-        // Draw vertically centered text
-        val textY = margin + padV - textBounds.top
-        canvas.drawText(titleText, margin + padH, textY, textPaint)
+        // Draw vertically stacked text: Title first, then Subtitle directly below it
+        val titleY = margin + padV - titleBounds.top
+        canvas.drawText(titleText, margin + padH, titleY, titlePaint)
+
+        if (subtitleText != null) {
+            val subtitleY = titleY + gap - subtitleBounds.top + titleBounds.bottom
+            canvas.drawText(subtitleText, margin + padH, subtitleY, subtitlePaint)
+        }
     }
 }

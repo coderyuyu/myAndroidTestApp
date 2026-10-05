@@ -161,15 +161,63 @@ class GpxEditEngine(initialData: GpxData = GpxData()) {
         return currentData
     }
 
-    /**
-     * Updates an existing Waypoint.
-     */
     fun updateWaypoint(oldWaypoint: Waypoint, newWaypoint: Waypoint): GpxData {
         pushState()
-        val updatedWaypoints = currentData.waypoints.map {
-            if (it == oldWaypoint) newWaypoint else it
+        val exists = currentData.waypoints.any { it == oldWaypoint }
+        val updatedWaypoints = if (exists) {
+            currentData.waypoints.map {
+                if (it == oldWaypoint) newWaypoint else it
+            }
+        } else {
+            currentData.waypoints + newWaypoint
         }
         currentData = currentData.copy(waypoints = updatedWaypoints)
+        return currentData
+    }
+
+    /**
+     * Inserts a new TrackPoint at specified index into current track.
+     */
+    fun insertTrackPoint(index: Int, point: TrackPoint): GpxData {
+        val points = currentData.trackPoints
+        val clampedIndex = index.coerceIn(0, points.size)
+        pushState()
+        val newPoints = points.toMutableList().apply {
+            add(clampedIndex, point)
+        }
+        currentData = currentData.copy(trackPoints = newPoints)
+        return currentData
+    }
+
+    /**
+     * Moves a TrackPoint at specified index to new coordinates.
+     */
+    fun moveTrackPoint(index: Int, newLat: Double, newLon: Double): GpxData {
+        val points = currentData.trackPoints
+        if (index !in points.indices) return currentData
+        pushState()
+        val old = points[index]
+        val updated = old.copy(lat = newLat, lon = newLon)
+        val newPoints = points.toMutableList().apply {
+            this[index] = updated
+        }
+        currentData = currentData.copy(trackPoints = newPoints)
+        return currentData
+    }
+
+    /**
+     * Deletes a TrackPoint at specified index, strictly enforcing the 2-point minimum check.
+     */
+    fun deleteTrackPoint(index: Int): GpxData {
+        val points = currentData.trackPoints
+        if (points.size <= 2 || index !in points.indices) {
+            return currentData
+        }
+        pushState()
+        val newPoints = points.toMutableList().apply {
+            removeAt(index)
+        }
+        currentData = currentData.copy(trackPoints = newPoints)
         return currentData
     }
 }

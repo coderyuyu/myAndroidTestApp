@@ -31,7 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import android.net.Uri
-import com.gpxedt.app.ui.components.AddWaypointDialog
+import com.gpxedt.app.ui.waypoint.AddWaypointDialog
 import com.gpxedt.app.ui.components.BottomControlPanel
 import com.gpxedt.app.ui.components.EditWaypointDialog
 import com.gpxedt.app.ui.components.EditorTopAppBar
@@ -39,8 +39,13 @@ import com.gpxedt.app.ui.components.OpenGpxFileDialog
 import com.gpxedt.app.ui.components.OutOfRouteDialog
 import com.gpxedt.app.ui.components.ServerSettingsDialog
 import com.gpxedt.app.ui.components.WaypointListDialog
+import com.gpxedt.app.ui.components.PointActionBottomSheet
+import com.gpxedt.app.ui.map.components.MapLayerMenu
 import com.gpxedt.app.ui.map.MapViewContainer
 import com.gpxedt.app.viewmodel.GpxEditorViewModel
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.OpenWith
 
 import android.Manifest
 import android.content.pm.PackageManager
@@ -174,11 +179,76 @@ fun GpxEditorScreen(
                 mapBoundsTrigger = uiState.mapBoundsTrigger,
                 focusLocation = uiState.focusLocation,
                 cameraCenterLocation = uiState.cameraCenterLocation,
+                showTrackpoints = uiState.showTrackpoints,
+                dragInsertCoordinate = uiState.dragInsertCoordinate,
+                dragInsertIndex = uiState.dragInsertProjectedIndex,
+                movingVertexPosition = uiState.movingVertexPosition,
+                movingVertexIndex = uiState.movingVertexIndex,
                 onPointTapped = { viewModel.setMiddlePointer(it) },
+                onVertexTapped = { viewModel.onVertexTapped(it) },
+                onStartDragInsertion = { lat, lon -> viewModel.startDragInsertion(lat, lon) },
+                onUpdateDragInsertion = { lat, lon -> viewModel.updateDragInsertion(lat, lon) },
+                onCommitDragInsertion = { lat, lon -> viewModel.commitDragInsertion(lat, lon) },
+                onCancelDragInsertion = { viewModel.cancelDragInsertion() },
+                onUpdateMovePosition = { lat, lon -> viewModel.updateMoveVertexPosition(lat, lon) },
+                onCommitMovePosition = { idx, lat, lon -> viewModel.commitMoveVertex(idx, lat, lon) },
+                onCancelMovePosition = { viewModel.cancelMoveVertexMode() },
                 onMapLongClick = { lat, lon ->
                     viewModel.openAddWaypointDialog(lat, lon)
                 }
             )
+
+            // Map Layer Menu: Show/Hide Trackpoints toggle
+            MapLayerMenu(
+                showTrackpoints = uiState.showTrackpoints,
+                onToggleTrackpoints = { viewModel.toggleShowTrackpoints(it) },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp)
+            )
+
+            // Move Mode Top Indicator & Action Banner
+            if (uiState.isMoveVertexMode) {
+                androidx.compose.material3.Card(
+                    shape = RoundedCornerShape(24.dp),
+                    colors = androidx.compose.material3.CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer
+                    ),
+                    elevation = androidx.compose.material3.CardDefaults.cardElevation(defaultElevation = 6.dp),
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 16.dp)
+                ) {
+                    androidx.compose.foundation.layout.Row(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(8.dp)
+                    ) {
+                        androidx.compose.material3.Icon(
+                            imageVector = androidx.compose.material.icons.Icons.Default.OpenWith,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Text(
+                            text = "Move Point #${(uiState.movingVertexIndex ?: 0) + 1} (Drag to relocate)",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                        androidx.compose.material3.IconButton(
+                            onClick = { viewModel.cancelMoveVertexMode() },
+                            modifier = Modifier.size(24.dp)
+                        ) {
+                            androidx.compose.material3.Icon(
+                                imageVector = androidx.compose.material.icons.Icons.Default.Close,
+                                contentDescription = "Cancel",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
 
             // If empty track, show onboarding hint
             if (uiState.gpxData.trackPoints.isEmpty()) {
@@ -239,6 +309,9 @@ fun GpxEditorScreen(
         AddWaypointDialog(
             location = uiState.pendingWaypointLocation,
             initialWaypoint = uiState.pendingPhotoWaypoint,
+            inheritedTime = uiState.pendingWaypointTime,
+            isTimeInheritedFromTrack = uiState.isPendingWaypointTimeFromTrack,
+            inheritedEle = uiState.pendingWaypointEle,
             photoDistanceMeters = uiState.photoRouteDistanceMeters,
             onPickPhotoClick = launchPhotoPicker,
             onDismiss = { viewModel.dismissAddWaypointDialog() },
@@ -259,6 +332,8 @@ fun GpxEditorScreen(
     if (uiState.isWaypointListDialogOpen) {
         WaypointListDialog(
             waypoints = uiState.gpxData.waypoints,
+            currentSortOrder = uiState.waypointSortOrder,
+            onSortOrderChange = { viewModel.setWaypointSortOrder(it) },
             onDismiss = { viewModel.dismissWaypointListDialog() },
             onLocate = { viewModel.locateWaypoint(it) },
             onEdit = { viewModel.openEditWaypointDialog(it) },
@@ -332,6 +407,18 @@ fun GpxEditorScreen(
                 onOpenGpxFile()
             },
             onDismiss = { viewModel.dismissGpxFileSelectionDialog() }
+        )
+    }
+
+    if (uiState.isPointActionSheetOpen && uiState.selectedVertex != null && uiState.selectedVertexIndex != null) {
+        PointActionBottomSheet(
+            pointIndex = uiState.selectedVertexIndex!!,
+            point = uiState.selectedVertex!!,
+            totalPointsCount = uiState.gpxData.trackPoints.size,
+            onMoveClick = { viewModel.startMoveVertexMode(uiState.selectedVertexIndex!!) },
+            onDeleteClick = { viewModel.deleteVertex(uiState.selectedVertexIndex!!) },
+            onSetAsWptClick = { viewModel.convertVertexToWaypoint(uiState.selectedVertexIndex!!) },
+            onDismiss = { viewModel.dismissPointActionSheet() }
         )
     }
 }

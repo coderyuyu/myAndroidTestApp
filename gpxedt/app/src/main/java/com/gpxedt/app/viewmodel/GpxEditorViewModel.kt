@@ -10,9 +10,11 @@ import androidx.lifecycle.viewModelScope
 import com.gpxedt.app.engine.GpxEditEngine
 import com.gpxedt.app.model.GpxData
 import com.gpxedt.app.model.GpxFileInfo
+import com.gpxedt.app.model.GpxWaypoint
 import com.gpxedt.app.model.RoutingProfile
 import com.gpxedt.app.model.TrackPoint
 import com.gpxedt.app.model.Waypoint
+import com.gpxedt.app.model.WaypointSortOrder
 import com.gpxedt.app.network.OsrmRoutingApi
 import com.gpxedt.app.network.RoutingRepository
 import com.gpxedt.app.parser.GpxParser
@@ -25,6 +27,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -45,12 +49,23 @@ class GpxEditorViewModel(
 
     private val routingRepository = RoutingRepository(savedServerUrl)
 
+    private val preferencesRepository = com.gpxedt.app.data.preferences.UserPreferencesRepositoryImpl(application)
+
     private val _uiState = MutableStateFlow(
         GpxEditorUiState(
-            osrmServerUrl = savedServerUrl
+            osrmServerUrl = savedServerUrl,
+            showTrackpoints = preferencesRepository.isShowTrackpoints()
         )
     )
     val uiState: StateFlow<GpxEditorUiState> = _uiState.asStateFlow()
+
+    init {
+        preferencesRepository.showTrackpointsFlow
+            .onEach { show ->
+                _uiState.update { it.copy(showTrackpoints = show) }
+            }
+            .launchIn(viewModelScope)
+    }
 
     fun updateServerUrl(newUrl: String) {
         val trimmed = newUrl.trim().ifEmpty { OsrmRoutingApi.DEFAULT_OSRM_URL }
@@ -238,12 +253,41 @@ class GpxEditorViewModel(
         } else {
             null
         }
+
+        var inheritedTime: Instant? = null
+        var isFromTrack = false
+        var inheritedEle: Double? = null
+
+        val trackPoints = _uiState.value.gpxData.trackPoints
+        if (targetLoc != null && trackPoints.isNotEmpty()) {
+            val clickPt = TrackPoint(targetLoc.first, targetLoc.second)
+            var closestPt: TrackPoint? = null
+            var minDistance = Double.MAX_VALUE
+            for (pt in trackPoints) {
+                val d = clickPt.distanceTo(pt)
+                if (d < minDistance) {
+                    minDistance = d
+                    closestPt = pt
+                }
+            }
+            if (closestPt != null && minDistance <= GeoUtils.DEFAULT_ROUTE_PROXIMITY_THRESHOLD_METERS) {
+                if (closestPt.time != null) {
+                    inheritedTime = closestPt.time
+                    isFromTrack = true
+                }
+                inheritedEle = closestPt.ele
+            }
+        }
+
         _uiState.update {
             it.copy(
                 isAddWaypointDialogOpen = true,
                 pendingWaypointLocation = targetLoc,
                 pendingPhotoWaypoint = null,
-                photoRouteDistanceMeters = null
+                photoRouteDistanceMeters = null,
+                pendingWaypointTime = inheritedTime ?: Instant.now(),
+                isPendingWaypointTimeFromTrack = isFromTrack,
+                pendingWaypointEle = inheritedEle
             )
         }
     }
@@ -259,12 +303,19 @@ class GpxEditorViewModel(
             state.gpxData.waypoints.isNotEmpty() -> state.gpxData.waypoints[0].lat to state.gpxData.waypoints[0].lon
             else -> null
         }
+        val inheritedTime = middlePt?.time ?: Instant.now()
+        val isFromTrack = middlePt?.time != null
+        val inheritedEle = middlePt?.ele
+
         _uiState.update {
             it.copy(
                 isAddWaypointDialogOpen = true,
                 pendingWaypointLocation = targetLoc,
                 pendingPhotoWaypoint = null,
-                photoRouteDistanceMeters = null
+                photoRouteDistanceMeters = null,
+                pendingWaypointTime = inheritedTime,
+                isPendingWaypointTimeFromTrack = isFromTrack,
+                pendingWaypointEle = inheritedEle
             )
         }
     }
@@ -275,7 +326,10 @@ class GpxEditorViewModel(
                 isAddWaypointDialogOpen = false,
                 pendingWaypointLocation = null,
                 pendingPhotoWaypoint = null,
-                photoRouteDistanceMeters = null
+                photoRouteDistanceMeters = null,
+                pendingWaypointTime = null,
+                isPendingWaypointTimeFromTrack = false,
+                pendingWaypointEle = null
             )
         }
     }
@@ -299,15 +353,15 @@ class GpxEditorViewModel(
             ?: return
 
         val photoWpt = _uiState.value.pendingPhotoWaypoint
-        val finalTime = time ?: photoWpt?.time
-        val finalEle = ele ?: photoWpt?.ele
+        val finalTime = time ?: photoWpt?.time ?: _uiState.value.pendingWaypointTime ?: Instant.now()
+        val finalEle = ele ?: photoWpt?.ele ?: _uiState.value.pendingWaypointEle
 
         val waypoint = Waypoint(
             lat = finalLat,
             lon = finalLon,
             name = name.ifBlank { "Waypoint" },
             desc = desc?.ifBlank { null },
-            sym = sym?.ifBlank { null },
+            sym = GpxWaypoint.normalizeSymbol(sym),
             ele = finalEle,
             time = finalTime
         )
@@ -322,6 +376,9 @@ class GpxEditorViewModel(
                 pendingWaypointLocation = null,
                 pendingPhotoWaypoint = null,
                 photoRouteDistanceMeters = null,
+                pendingWaypointTime = null,
+                isPendingWaypointTimeFromTrack = false,
+                pendingWaypointEle = null,
                 userMessage = "Waypoint \"${waypoint.name}\" added"
             )
         }
@@ -441,6 +498,10 @@ class GpxEditorViewModel(
 
     fun dismissWaypointListDialog() {
         _uiState.update { it.copy(isWaypointListDialogOpen = false) }
+    }
+
+    fun setWaypointSortOrder(order: WaypointSortOrder) {
+        _uiState.update { it.copy(waypointSortOrder = order) }
     }
 
     fun openEditWaypointDialog(waypoint: Waypoint) {
@@ -669,5 +730,181 @@ class GpxEditorViewModel(
             // Fallback
         }
         return name ?: uri.lastPathSegment
+    }
+
+    // ----------------------------------------------------
+    // Trackpoint Editing & Visibility Controls
+    // ----------------------------------------------------
+
+    fun toggleShowTrackpoints(show: Boolean) {
+        viewModelScope.launch {
+            preferencesRepository.setShowTrackpoints(show)
+        }
+    }
+
+    fun onVertexTapped(index: Int) {
+        if (index in _uiState.value.gpxData.trackPoints.indices) {
+            _uiState.update {
+                it.copy(
+                    selectedVertexIndex = index,
+                    isPointActionSheetOpen = true
+                )
+            }
+        }
+    }
+
+    fun dismissPointActionSheet() {
+        _uiState.update {
+            it.copy(
+                isPointActionSheetOpen = false,
+                selectedVertexIndex = null
+            )
+        }
+    }
+
+    fun startMoveVertexMode(index: Int) {
+        val points = _uiState.value.gpxData.trackPoints
+        if (index in points.indices) {
+            val pt = points[index]
+            _uiState.update {
+                it.copy(
+                    isPointActionSheetOpen = false,
+                    isMoveVertexMode = true,
+                    movingVertexIndex = index,
+                    movingVertexPosition = Pair(pt.lat, pt.lon)
+                )
+            }
+        }
+    }
+
+    fun updateMoveVertexPosition(lat: Double, lon: Double) {
+        if (_uiState.value.isMoveVertexMode) {
+            _uiState.update { it.copy(movingVertexPosition = Pair(lat, lon)) }
+        }
+    }
+
+    fun commitMoveVertex(index: Int, newLat: Double, newLon: Double) {
+        val updated = editEngine.moveTrackPoint(index, newLat, newLon)
+        _uiState.update {
+            it.copy(
+                gpxData = updated,
+                isMoveVertexMode = false,
+                movingVertexIndex = null,
+                movingVertexPosition = null,
+                selectedVertexIndex = null,
+                canUndo = editEngine.canUndo,
+                canRedo = editEngine.canRedo
+            )
+        }
+    }
+
+    fun cancelMoveVertexMode() {
+        _uiState.update {
+            it.copy(
+                isMoveVertexMode = false,
+                movingVertexIndex = null,
+                movingVertexPosition = null
+            )
+        }
+    }
+
+    fun deleteVertex(index: Int): Boolean {
+        val points = _uiState.value.gpxData.trackPoints
+        if (points.size <= 2) {
+            _uiState.update {
+                it.copy(
+                    isPointActionSheetOpen = false,
+                    userMessage = "Cannot delete: Route requires at least 2 points"
+                )
+            }
+            return false
+        }
+
+        val updated = editEngine.deleteTrackPoint(index)
+        _uiState.update {
+            it.copy(
+                gpxData = updated,
+                isPointActionSheetOpen = false,
+                selectedVertexIndex = null,
+                canUndo = editEngine.canUndo,
+                canRedo = editEngine.canRedo
+            )
+        }
+        return true
+    }
+
+    fun convertVertexToWaypoint(index: Int) {
+        val points = _uiState.value.gpxData.trackPoints
+        if (index in points.indices) {
+            val pt = points[index]
+            val wpt = com.gpxedt.app.util.GeoSpatialUtil.pointToWaypoint(
+                point = pt,
+                name = "Point_${index + 1}",
+                desc = "Converted from trackpoint #${index + 1}"
+            )
+            _uiState.update {
+                it.copy(
+                    isPointActionSheetOpen = false,
+                    selectedVertexIndex = null,
+                    editingWaypoint = wpt
+                )
+            }
+        }
+    }
+
+    fun startDragInsertion(lat: Double, lon: Double) {
+        val points = _uiState.value.gpxData.trackPoints
+        val nearest = com.gpxedt.app.util.GeoSpatialUtil.findNearestSegment(lat, lon, points)
+        _uiState.update {
+            it.copy(
+                isDragInsertingVertex = true,
+                dragInsertCoordinate = Pair(lat, lon),
+                dragInsertProjectedIndex = nearest?.insertionIndex
+            )
+        }
+    }
+
+    fun updateDragInsertion(lat: Double, lon: Double) {
+        if (_uiState.value.isDragInsertingVertex) {
+            val points = _uiState.value.gpxData.trackPoints
+            val nearest = com.gpxedt.app.util.GeoSpatialUtil.findNearestSegment(lat, lon, points)
+            _uiState.update {
+                it.copy(
+                    dragInsertCoordinate = Pair(lat, lon),
+                    dragInsertProjectedIndex = nearest?.insertionIndex
+                )
+            }
+        }
+    }
+
+    fun commitDragInsertion(lat: Double, lon: Double) {
+        val points = _uiState.value.gpxData.trackPoints
+        val targetIndex = _uiState.value.dragInsertProjectedIndex
+            ?: com.gpxedt.app.util.GeoSpatialUtil.findNearestSegment(lat, lon, points)?.insertionIndex
+            ?: points.size
+
+        val newPoint = TrackPoint(lat = lat, lon = lon)
+        val updated = editEngine.insertTrackPoint(targetIndex, newPoint)
+
+        _uiState.update {
+            it.copy(
+                gpxData = updated,
+                isDragInsertingVertex = false,
+                dragInsertCoordinate = null,
+                dragInsertProjectedIndex = null,
+                canUndo = editEngine.canUndo,
+                canRedo = editEngine.canRedo
+            )
+        }
+    }
+
+    fun cancelDragInsertion() {
+        _uiState.update {
+            it.copy(
+                isDragInsertingVertex = false,
+                dragInsertCoordinate = null,
+                dragInsertProjectedIndex = null
+            )
+        }
     }
 }

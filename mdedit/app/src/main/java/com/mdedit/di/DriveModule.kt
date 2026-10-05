@@ -2,6 +2,8 @@ package com.mdedit.di
 
 import com.mdedit.data.repository.DocumentRepository
 import com.mdedit.data.repository.DocumentRepositoryImpl
+import com.mdedit.data.repository.FileRepository
+import com.mdedit.data.repository.FileRepositoryImpl
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -17,4 +19,10 @@ abstract class DriveModule {
     abstract fun bindDocumentRepository(
         impl: DocumentRepositoryImpl
     ): DocumentRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindFileRepository(
+        impl: FileRepositoryImpl
+    ): FileRepository
 }

@@ -1,15 +1,20 @@
 package com.mdedit.ui.screens.editor
 
+import android.net.Uri
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.android.gms.auth.api.signin.GoogleSignInAccount
+import com.mdedit.data.parser.MarkdownParser
 import com.mdedit.data.remote.DriveAuthManager
 import com.mdedit.data.repository.DocumentRepository
+import com.mdedit.data.repository.FileRepository
 import com.mdedit.domain.model.Document
 import com.mdedit.domain.model.DriveFileInfo
 import com.mdedit.domain.model.EditorFormatState
-import com.mdedit.domain.model.SyncStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,32 +30,79 @@ import javax.inject.Inject
 @HiltViewModel
 class EditorViewModel @Inject constructor(
     private val repository: DocumentRepository,
-    private val authManager: DriveAuthManager
+    private val fileRepository: FileRepository,
+    private val authManager: DriveAuthManager,
+    private val markdownParser: MarkdownParser,
+    private val savedStateHandle: SavedStateHandle
 ) : ViewModel() {
 
-    private val _uiState = MutableStateFlow(EditorUiState())
-    val uiState: StateFlow<EditorUiState> = _uiState.asStateFlow()
+    companion object {
+        const val KEY_DOC_ID = "key_editor_doc_id"
+        const val KEY_TITLE = "key_editor_title"
+        const val KEY_CONTENT = "key_editor_content"
+        const val KEY_IS_DIRTY = "key_editor_is_dirty"
+        const val KEY_FILE_URI = "key_editor_file_uri"
+        const val KEY_IS_PREVIEW = "key_editor_is_preview"
+        const val KEY_IS_VISUAL = "key_editor_is_visual"
+    }
+
+    private val _uiState: MutableStateFlow<EditorUiState>
+    val uiState: StateFlow<EditorUiState>
 
     private val autoSaveTrigger = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    private val markdownPreviewTrigger = MutableSharedFlow<String>(replay = 1, extraBufferCapacity = 1)
 
     init {
+        // Restore state from SavedStateHandle to survive configuration changes & process death
+        val restoredContent = savedStateHandle.get<String>(KEY_CONTENT)
+        val restoredTitle = savedStateHandle.get<String>(KEY_TITLE)
+        val restoredIsDirty = savedStateHandle.get<Boolean>(KEY_IS_DIRTY) ?: false
+        val restoredUriStr = savedStateHandle.get<String>(KEY_FILE_URI)
+        val restoredIsPreview = savedStateHandle.get<Boolean>(KEY_IS_PREVIEW) ?: false
+        val restoredIsVisual = savedStateHandle.get<Boolean>(KEY_IS_VISUAL) ?: false
+
+        val initialUri = restoredUriStr?.let { Uri.parse(it) }
+
+        _uiState = MutableStateFlow(
+            EditorUiState(
+                title = restoredTitle ?: "Untitled",
+                markdownContent = restoredContent ?: "",
+                isDirty = restoredIsDirty,
+                currentFileUri = initialUri,
+                isPreviewMode = restoredIsPreview,
+                isVisualMode = restoredIsVisual
+            )
+        )
+        uiState = _uiState.asStateFlow()
+
         observeDocuments()
         observeNetworkAndSync()
         observeAuth()
         setupAutoSave()
+        setupMarkdownPreviewDebounce()
+
+        // Initial preview parse if restored content is present
+        if (!restoredContent.isNullOrEmpty()) {
+            markdownPreviewTrigger.tryEmit(restoredContent)
+        }
     }
 
     private fun observeDocuments() {
         viewModelScope.launch {
             repository.getAllDocuments().collect { docs ->
                 _uiState.update { current ->
+                    // If user has unsaved edits in active session or restored from process death, preserve them
+                    if (current.isDirty) {
+                        return@update current.copy(allDocuments = docs)
+                    }
+
                     if (docs.isEmpty()) {
-                        // Create default document if database is completely empty
                         val defaultDoc = Document(
                             title = "Welcome to MDEdit",
                             content = "# Welcome to MDEdit \n\nA **What-You-See-Is-What-You-Get** Markdown Editor with Google Drive sync.\n\n- [x] Rich visual formatting\n- [x] Auto-save to local storage\n- [x] Google Drive cloud sync\n- [ ] Try creating your own notes!\n\n> Edit comfortably with inline styles or switch to raw markdown mode anytime."
                         )
                         viewModelScope.launch { repository.saveDocumentLocally(defaultDoc) }
+                        markdownPreviewTrigger.tryEmit(defaultDoc.content)
                         current.copy(
                             allDocuments = listOf(defaultDoc),
                             currentDocument = defaultDoc,
@@ -58,11 +110,16 @@ class EditorViewModel @Inject constructor(
                             markdownContent = defaultDoc.content
                         )
                     } else {
-                        // Keep current document reference up to date
                         val updatedCurrent = docs.find { it.id == current.currentDocument.id } ?: docs.first()
+                        val shouldUpdateContent = current.markdownContent.isEmpty() && !current.isDirty
+                        if (shouldUpdateContent) {
+                            markdownPreviewTrigger.tryEmit(updatedCurrent.content)
+                        }
                         current.copy(
                             allDocuments = docs,
-                            currentDocument = if (current.isDirty) current.currentDocument else updatedCurrent
+                            currentDocument = updatedCurrent,
+                            title = if (shouldUpdateContent) updatedCurrent.title else current.title,
+                            markdownContent = if (shouldUpdateContent) updatedCurrent.content else current.markdownContent
                         )
                     }
                 }
@@ -94,9 +151,20 @@ class EditorViewModel @Inject constructor(
     private fun setupAutoSave() {
         viewModelScope.launch {
             autoSaveTrigger
-                .debounce(2500L) // 2.5 second debounce for auto-save
+                .debounce(2500L)
                 .collectLatest {
                     saveDocument(autoSync = true)
+                }
+        }
+    }
+
+    private fun setupMarkdownPreviewDebounce() {
+        viewModelScope.launch {
+            markdownPreviewTrigger
+                .debounce(300L) // 300ms debounce to prevent frame drops and recomposition loops
+                .collectLatest { text ->
+                    val parsed = markdownParser.parseToAnnotatedString(text)
+                    _uiState.update { it.copy(parsedMarkdown = parsed) }
                 }
         }
     }
@@ -109,7 +177,11 @@ class EditorViewModel @Inject constructor(
                 isDirty = true
             )
         }
+        savedStateHandle[KEY_CONTENT] = newContent
+        savedStateHandle[KEY_IS_DIRTY] = true
+
         autoSaveTrigger.tryEmit(Unit)
+        markdownPreviewTrigger.tryEmit(newContent)
     }
 
     fun onTitleChanged(newTitle: String) {
@@ -120,6 +192,9 @@ class EditorViewModel @Inject constructor(
                 isDirty = true
             )
         }
+        savedStateHandle[KEY_TITLE] = newTitle
+        savedStateHandle[KEY_IS_DIRTY] = true
+
         autoSaveTrigger.tryEmit(Unit)
     }
 
@@ -128,8 +203,136 @@ class EditorViewModel @Inject constructor(
     }
 
     fun toggleVisualMode() {
-        _uiState.update { it.copy(isVisualMode = !it.isVisualMode) }
+        val nextVisual = !_uiState.value.isVisualMode
+        _uiState.update { it.copy(isVisualMode = nextVisual) }
+        savedStateHandle[KEY_IS_VISUAL] = nextVisual
     }
+
+    fun togglePreviewMode() {
+        val nextPreview = !_uiState.value.isPreviewMode
+        _uiState.update { it.copy(isPreviewMode = nextPreview) }
+        savedStateHandle[KEY_IS_PREVIEW] = nextPreview
+        if (nextPreview) {
+            // Immediately refresh preview when opening preview mode
+            markdownPreviewTrigger.tryEmit(_uiState.value.markdownContent)
+        }
+    }
+
+    // =========================================================================
+    // Storage Access Framework (SAF) File Operations
+    // =========================================================================
+
+    /**
+     * Loads a file from a Storage Access Framework (SAF) [Uri].
+     * Executed strictly on background IO without blocking the main UI thread.
+     */
+    fun openFileFromUri(uri: Uri) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+            val result = fileRepository.readFile(uri)
+            result.onSuccess { loaded ->
+                _uiState.update {
+                    it.copy(
+                        currentFileUri = loaded.uri,
+                        title = loaded.filename,
+                        markdownContent = loaded.content,
+                        isDirty = false,
+                        isLoading = false,
+                        errorMessage = null,
+                        snackbarMessage = "Opened '${loaded.filename}'"
+                    )
+                }
+                savedStateHandle[KEY_FILE_URI] = loaded.uri.toString()
+                savedStateHandle[KEY_TITLE] = loaded.filename
+                savedStateHandle[KEY_CONTENT] = loaded.content
+                savedStateHandle[KEY_IS_DIRTY] = false
+
+                // Trigger background markdown parse
+                markdownPreviewTrigger.tryEmit(loaded.content)
+
+                // Also save/cache into local document database
+                val externalDoc = Document(
+                    title = loaded.filename,
+                    content = loaded.content
+                )
+                repository.saveDocumentLocally(externalDoc)
+                _uiState.update { it.copy(currentDocument = externalDoc) }
+            }.onFailure { ex ->
+                val errorMsg = when (ex) {
+                    is SecurityException -> "Permission denied: unable to access external file."
+                    else -> "Failed to open file: ${ex.localizedMessage ?: "Unknown error"}"
+                }
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = errorMsg
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * Saves current editor content to a SAF [Uri].
+     */
+    fun saveFileToUri(uri: Uri) {
+        viewModelScope.launch {
+            _uiState.update { it.copy(isLoading = true, errorMessage = null) }
+            val content = _uiState.value.markdownContent
+            val result = fileRepository.writeFile(uri, content)
+            result.onSuccess {
+                val filename = fileRepository.getFileName(uri)
+                _uiState.update {
+                    it.copy(
+                        currentFileUri = uri,
+                        title = filename,
+                        isDirty = false,
+                        isLoading = false,
+                        errorMessage = null,
+                        snackbarMessage = "Saved '$filename' successfully"
+                    )
+                }
+                savedStateHandle[KEY_FILE_URI] = uri.toString()
+                savedStateHandle[KEY_TITLE] = filename
+                savedStateHandle[KEY_IS_DIRTY] = false
+
+                // Also update local copy
+                saveDocument(autoSync = false)
+            }.onFailure { ex ->
+                val errorMsg = when (ex) {
+                    is SecurityException -> "Permission denied: unable to save file to destination."
+                    else -> "Failed to save file: ${ex.localizedMessage ?: "Unknown error"}"
+                }
+                _uiState.update {
+                    it.copy(
+                        isLoading = false,
+                        errorMessage = errorMsg
+                    )
+                }
+            }
+        }
+    }
+
+    fun saveCurrentFile() {
+        val currentUri = _uiState.value.currentFileUri
+        if (currentUri != null) {
+            saveFileToUri(currentUri)
+        } else {
+            saveDocument(autoSync = true)
+        }
+    }
+
+    fun clearErrorMessage() {
+        _uiState.update { it.copy(errorMessage = null) }
+    }
+
+    fun clearSnackbarMessage() {
+        _uiState.update { it.copy(snackbarMessage = null) }
+    }
+
+    // =========================================================================
+    // Document Database & Google Drive Operations
+    // =========================================================================
 
     fun saveDocument(autoSync: Boolean = true) {
         val state = _uiState.value
@@ -141,7 +344,6 @@ class EditorViewModel @Inject constructor(
 
         viewModelScope.launch {
             if (autoSync && state.isOnline && state.signedInAccount != null && docToSave.driveFileId != null) {
-                // Sync to Google Drive
                 val result = repository.saveAndSyncDocument(docToSave)
                 result.onSuccess { synced ->
                     _uiState.update {
@@ -150,10 +352,11 @@ class EditorViewModel @Inject constructor(
                             isDirty = false
                         )
                     }
+                    savedStateHandle[KEY_IS_DIRTY] = false
                 }.onFailure {
-                    // Saved locally with error status
                     repository.saveDocumentLocally(docToSave)
                     _uiState.update { it.copy(isDirty = false) }
+                    savedStateHandle[KEY_IS_DIRTY] = false
                 }
             } else {
                 repository.saveDocumentLocally(docToSave)
@@ -163,6 +366,7 @@ class EditorViewModel @Inject constructor(
                         isDirty = false
                     )
                 }
+                savedStateHandle[KEY_IS_DIRTY] = false
             }
         }
     }
@@ -180,9 +384,18 @@ class EditorViewModel @Inject constructor(
                     currentDocument = newDoc,
                     title = newDoc.title,
                     markdownContent = newDoc.content,
-                    isDirty = false
+                    currentFileUri = null,
+                    isDirty = false,
+                    errorMessage = null
                 )
             }
+            savedStateHandle[KEY_DOC_ID] = newDoc.id
+            savedStateHandle[KEY_TITLE] = newDoc.title
+            savedStateHandle[KEY_CONTENT] = newDoc.content
+            savedStateHandle[KEY_FILE_URI] = null
+            savedStateHandle[KEY_IS_DIRTY] = false
+
+            markdownPreviewTrigger.tryEmit(newDoc.content)
         }
     }
 
@@ -194,9 +407,18 @@ class EditorViewModel @Inject constructor(
                 currentDocument = doc,
                 title = doc.title,
                 markdownContent = doc.content,
-                isDirty = false
+                currentFileUri = null,
+                isDirty = false,
+                errorMessage = null
             )
         }
+        savedStateHandle[KEY_DOC_ID] = doc.id
+        savedStateHandle[KEY_TITLE] = doc.title
+        savedStateHandle[KEY_CONTENT] = doc.content
+        savedStateHandle[KEY_FILE_URI] = null
+        savedStateHandle[KEY_IS_DIRTY] = false
+
+        markdownPreviewTrigger.tryEmit(doc.content)
     }
 
     fun deleteDocument(doc: Document) {
@@ -261,6 +483,12 @@ class EditorViewModel @Inject constructor(
                         snackbarMessage = "Imported '${file.name}' from Drive"
                     )
                 }
+                savedStateHandle[KEY_DOC_ID] = importedDoc.id
+                savedStateHandle[KEY_TITLE] = importedDoc.title
+                savedStateHandle[KEY_CONTENT] = importedDoc.content
+                savedStateHandle[KEY_IS_DIRTY] = false
+
+                markdownPreviewTrigger.tryEmit(importedDoc.content)
             }.onFailure { ex ->
                 _uiState.update {
                     it.copy(
@@ -289,6 +517,7 @@ class EditorViewModel @Inject constructor(
                         snackbarMessage = "Synced to Google Drive successfully!"
                     )
                 }
+                savedStateHandle[KEY_IS_DIRTY] = false
             }.onFailure { ex ->
                 _uiState.update {
                     it.copy(snackbarMessage = "Sync failed: ${ex.message}")
@@ -308,9 +537,5 @@ class EditorViewModel @Inject constructor(
         authManager.signOut {
             _uiState.update { it.copy(snackbarMessage = "Signed out of Google Drive") }
         }
-    }
-
-    fun clearSnackbarMessage() {
-        _uiState.update { it.copy(snackbarMessage = null) }
     }
 }

@@ -22,6 +22,8 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Cloud
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.FileOpen
+import androidx.compose.material.icons.filled.SaveAs
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -55,6 +57,8 @@ fun DocumentListDrawer(
     onDocumentDelete: (Document) -> Unit,
     onNewDocument: () -> Unit,
     onOpenDriveDialog: () -> Unit,
+    onOpenFile: () -> Unit = {},
+    onSaveAs: () -> Unit = {},
     onSignIn: () -> Unit,
     onSignOut: () -> Unit,
     modifier: Modifier = Modifier
@@ -190,6 +194,44 @@ fun DocumentListDrawer(
                 }
             }
 
+            // Storage Access Framework Actions
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 2.dp)
+            ) {
+                OutlinedButton(
+                    onClick = onOpenFile,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.FileOpen,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Open File", fontSize = 12.sp)
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                OutlinedButton(
+                    onClick = onSaveAs,
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.SaveAs,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("Save As", fontSize = 12.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
 
             // Section title

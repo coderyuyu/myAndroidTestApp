@@ -69,6 +69,14 @@ data class GpxWaypoint(
 )
 
 /**
+ * WPT visibility and animation mode.
+ */
+enum class WptVisibilityMode(val displayName: String) {
+    ONLY_DURING_PAUSE("在停留期間才顯示"),
+    ALWAYS_SHOW("永遠顯示")
+}
+
+/**
  * Complete processed GPX track containing all track points and summary statistics.
  */
 data class GpxTrack(
@@ -245,7 +253,12 @@ data class GpxTrack(
             }
         }
 
-        for (wpt in waypoints) {
+        val slicedWaypoints = waypoints.filter { wpt ->
+            val p = findClosestProgress(wpt.lat, wpt.lon)
+            p in (startF - 0.005f)..(endF + 0.005f)
+        }
+
+        for (wpt in slicedWaypoints) {
             minLat = kotlin.math.min(minLat, wpt.lat)
             maxLat = kotlin.math.max(maxLat, wpt.lat)
             minLon = kotlin.math.min(minLon, wpt.lon)
@@ -261,7 +274,7 @@ data class GpxTrack(
         return GpxTrack(
             name = name,
             points = rawSlicedPoints,
-            waypoints = waypoints,
+            waypoints = slicedWaypoints,
             totalDistanceMeters = slicedTotalDist,
             totalDistanceKm = slicedTotalDist / 1000.0,
             minElevation = if (minEle == Double.MAX_VALUE) 0.0 else minEle,
@@ -278,6 +291,45 @@ data class GpxTrack(
                 maxLon = if (maxLon == -Double.MAX_VALUE) 0.0 else maxLon
             )
         )
+    }
+
+    /**
+     * Finds the fractional progress [0.0f .. 1.0f] of the track point closest to (lat, lon).
+     */
+    fun findClosestProgress(lat: Double, lon: Double): Float {
+        if (points.isEmpty()) return 0f
+        var bestDist = Double.MAX_VALUE
+        var bestIdx = 0
+        for (i in points.indices) {
+            val d = distanceMeters(lat, lon, points[i].lat, points[i].lon)
+            if (d < bestDist) {
+                bestDist = d
+                bestIdx = i
+            }
+        }
+        return if (totalDistanceMeters > 0.0) {
+            (points[bestIdx].cumulativeDistanceMeters / totalDistanceMeters).toFloat().coerceIn(0f, 1f)
+        } else {
+            (bestIdx.toFloat() / max(1, points.size - 1).toFloat()).coerceIn(0f, 1f)
+        }
+    }
+
+    /**
+     * Finds the cumulative distance in km of the track point closest to (lat, lon).
+     */
+    fun findClosestDistanceKm(lat: Double, lon: Double): Double {
+        if (points.isEmpty()) return 0.0
+        var bestDist = Double.MAX_VALUE
+        var bestIdx = 0
+        for (i in points.indices) {
+            val d = distanceMeters(lat, lon, points[i].lat, points[i].lon)
+            if (d < bestDist) {
+                bestDist = d
+                bestIdx = i
+            }
+        }
+        val p = points[bestIdx]
+        return if (p.cumulativeDistanceKm > 0.0) p.cumulativeDistanceKm else p.cumulativeDistanceMeters / 1000.0
     }
 
     companion object {
